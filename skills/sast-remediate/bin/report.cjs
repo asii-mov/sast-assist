@@ -8,7 +8,7 @@
 // path-policy rejection is a scope decision and not a security claim, rescan quiet is an
 // observation and never a verdict, and only an exploitable finding ever carries a severity.
 
-const { VERIFY_LEVELS, OBLIGATIONS } = require('./stage.cjs');
+const { VERIFY_LEVELS, OBLIGATIONS } = require('./stage.ts');
 const { claimedRank } = require('./gate.ts');
 
 // ---------------------------------------------------------------------- markdown primitives
@@ -83,7 +83,7 @@ const branchCell = (d) => (d.branch ? code(d.branch) : 'none');
 // The one sentence this whole file protects. "Verified" alone is exactly the phrase that
 // erases the difference between cheap and full, so it never appears without the level and the
 // skipped obligations named beside it. `unavailable` is named too: only the obligations in
-// bin/stage.cjs MAY_BE_UNAVAILABLE may land there, and an excused obligation is not a passed one.
+// bin/stage.ts MAY_BE_UNAVAILABLE may land there, and an excused obligation is not a passed one.
 function verificationSummary(d) {
   const parts = [];
   if (d.skipped_obligations.length === 0) {

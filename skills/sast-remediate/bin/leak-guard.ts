@@ -1,9 +1,8 @@
 #!/usr/bin/env node
-'use strict';
 // This module is the mechanical half of the rule that the fixer is never shown the rule. It
 // separates what the triage agent wrote from what the repository contains.
 
-const { SCANNERS } = require('./scan.cjs');
+import { SCANNERS } from './scan.cjs';
 
 // Prose cannot enforce the rule above, so this does. It is derived from the record rather than
 // from a fixed word list, because the rule ids this skill has never seen are the ones that matter.
@@ -11,7 +10,7 @@ const RULE_ID_FORM =
   /(?<![\w./@-])(?:js|javascript|ts|typescript|py|python|java|cpp|cs|go|rb|ruby|swift|rust|ql|actions)\/[a-z0-9]+(?:-[a-z0-9]+)+(?![@\w-]|\.[a-z]{1,4}\b)/i;
 
 const observations = (finding) => finding.sites.flatMap((s) => s.observations);
-const usable = (terms) => [...new Set(terms)].filter((t) => t && t.length >= 4);
+const usable = (terms: (string | null | undefined)[]) => [...new Set(terms)].filter((t) => t && t.length >= 4);
 
 // Checked against the whole prompt, repository source included: only this finding's own
 // rule ids, fingerprints and messages, which ordinary code does not contain.
@@ -47,4 +46,4 @@ const leakError = (prompt, finding) => {
   try { assertNoLeak(prompt, finding); return null; } catch (e) { return e.message; }
 };
 
-module.exports = { RULE_ID_FORM, recordTerms, proseTerms, authoredProse, assertNoLeak, leakError };
+export { RULE_ID_FORM, recordTerms, proseTerms, authoredProse, assertNoLeak, leakError };

@@ -188,7 +188,7 @@ on head, control on head.
 
 ## What "verified" means
 
-All seven obligations pass. `evaluateVerification` in `bin/stage.cjs` is the sole definition
+All seven obligations pass. `evaluateVerification` in `bin/stage.ts` is the sole definition
 and it is a pure function, not a prompt.
 
 `rescan.original_absent` is recorded and **read by no transition**. SAST rules match shapes and

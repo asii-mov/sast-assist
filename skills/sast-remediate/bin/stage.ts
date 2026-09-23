@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-'use strict';
 // The lifecycle of a finding record. Two pure functions, no LLM, no I/O.
 //
 // SKILL.md calls stageOf and evaluateVerification the sole definitions of "where is this
@@ -7,6 +6,8 @@
 // pipeline whose stage is re-derived by the parent, then again by a prompt, then again by a
 // report writer has three answers to one question, which is the failure this skill exists to
 // prevent.
+
+import fs from 'fs';
 
 // ---------------------------------------------------------------------- stage
 
@@ -109,15 +110,14 @@ const VERIFY_LEVELS = {
   full: OBLIGATIONS,
 };
 
-module.exports = {
+export {
   stageOf, evaluateVerification, STAGES, OBLIGATIONS, MAY_BE_UNAVAILABLE, VERIFY_LEVELS, excused,
 };
 
-if (require.main === module) {
-  const fs = require('fs');
+if (import.meta.main) {
   const [file, level] = process.argv.slice(2);
   if (!file || !Object.hasOwn(VERIFY_LEVELS, level)) {
-    console.error(`usage: stage.cjs <findings.json> <${Object.keys(VERIFY_LEVELS).join('|')}>`);
+    console.error(`usage: stage.ts <findings.json> <${Object.keys(VERIFY_LEVELS).join('|')}>`);
     process.exit(2);
   }
   const counts = new Map(STAGES.map((s) => [s, 0]));

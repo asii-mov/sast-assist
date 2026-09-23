@@ -7,7 +7,7 @@
 //
 // This file is also where the skill's central rule is enforced mechanically rather than by
 // prose: buildFixPrompt assembles the fixer's prompt field by field from the security contract
-// and the flow, and bin/leak-guard.cjs refuses to send a prompt that carries this finding's rule
+// and the flow, and bin/leak-guard.ts refuses to send a prompt that carries this finding's rule
 // id or message, or contract prose that names a scanner or has the form of a rule id. A finding
 // record is never handed to a fixer whole.
 
@@ -21,14 +21,14 @@ const ROOT = path.resolve(__dirname, '..');
 const FINDING_SCHEMA = path.join(ROOT, 'schema/finding.schema.json');
 const AGENT_SCHEMA = path.join(ROOT, 'schema/agent-results.schema.json');
 
-const { stageOf, evaluateVerification, VERIFY_LEVELS, excused } = require('./stage.cjs');
+const { stageOf, evaluateVerification, VERIFY_LEVELS, excused } = require('./stage.ts');
 const { gate, order } = require('./gate.ts');
 const { normalize, makeRepo } = require('./normalize.cjs');
 const { runScanners, onPath, trim, baselineOf, rescan, DEFAULT_SCAN_CONFIG, SUITE_NAME, semgrepConfigArg, SCANNERS } = require('./scan.cjs');
 const { validate } = require('./validate.cjs');
 const { guardDiff } = require('./patch-guard.cjs');
 const { defaultOutDir, readRecorded, mergeExisting, clearAttempt, incompleteReason } = require('./resume.cjs');
-const { assertNoLeak, leakError, recordTerms, authoredProse } = require('./leak-guard.cjs');
+const { assertNoLeak, leakError, recordTerms, authoredProse } = require('./leak-guard.ts');
 
 // --out is operator-controlled and git rejects spaces, `~ ^ : ? * [ \\`, `..` and a leading dot.
 const refSafe = (s) => String(s).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/\.{2,}/g, '.')

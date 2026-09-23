@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { VERIFY_LEVELS } = require('./stage.cjs');
+const { VERIFY_LEVELS } = require('./stage.ts');
 const { trim, parseScanConfig } = require('./scan.cjs');
 
 const readJson = (f) => JSON.parse(fs.readFileSync(f, 'utf8'));

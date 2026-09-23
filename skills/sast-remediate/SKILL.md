@@ -55,7 +55,7 @@ The parent is the only writer of `run-metadata.json`, `findings/<id>.json`, `REM
 ## What runs today
 
 The deterministic core is built and tested. `bin/normalize.cjs`, `bin/validate.cjs`,
-`bin/gate.ts`, `bin/stage.cjs`, `bin/patch-guard.cjs`, and the `dynamic` tier of
+`bin/gate.ts`, `bin/stage.ts`, `bin/patch-guard.cjs`, and the `dynamic` tier of
 `bin/witness-run.cjs` all work and are covered by `test/run-all.sh`.
 
 `bin/run.cjs` drives them. One command runs every stage: `run.cjs --target=DIR`. It spawns the
@@ -80,7 +80,7 @@ at `cheap` is not a fix verified at `full`, and the report says which ran.
 ## Stages
 
 Stage is derived from the record's shape and the run's verify level by `stageOf` in
-`bin/stage.cjs`, never stored. `run-metadata.json` records the level, so a resumed run judges
+`bin/stage.ts`, never stored. `run-metadata.json` records the level, so a resumed run judges
 with the level it started at. A finding's saved `disposition` is its final outcome, and the
 report reads only that.
 Re-running the command is the resume path. There is no `--resume` flag and no `status` field to fall out of sync.
@@ -117,7 +117,7 @@ End in exactly one of two states. Every finding has a terminal disposition, or `
 
 A fix is verified only when every obligation its verify level requires passes: all seven at
 `full`, four at `cheap`, none at `none`. The report names the level beside every verified fix.
-`evaluateVerification` in `bin/stage.cjs` is the sole definition. It indexes the seven obligation keys and nothing else, so `original_absent`
+`evaluateVerification` in `bin/stage.ts` is the sole definition. It indexes the seven obligation keys and nothing else, so `original_absent`
 is structurally unreachable from the verdict rather than merely forbidden in prose.
 
 1. **Frozen target.** The contract is written before the patch exists and never changes.
@@ -139,7 +139,7 @@ they mean the code does what it did, minus the vulnerability.
 
 **The fixer is never shown the rule.** No rule id, no scanner name, no scanner message, no
 observation, and no scanner tool access. You cannot game a matcher you were never shown.
-`assertNoLeak` in `bin/leak-guard.cjs` enforces it on every fixer and auditor prompt. The whole
+`assertNoLeak` in `bin/leak-guard.ts` enforces it on every fixer and auditor prompt. The whole
 prompt must not contain this finding's own rule id, fingerprint or message. The contract prose the
 triage agent wrote must also not name a scanner or a rule, or carry the syntactic form of a CodeQL
 rule id. Repository source is exempt from those last two checks, because a workflow that runs
@@ -186,11 +186,11 @@ proven but is **not enabled by default**. It is opt-in, tracked in
 All zero-dependency Node. Nothing is installed into the target.
 
 `bin/scan.cjs` runs the scanners, CodeQL once per detected language, and decides which rescan
-results a patch introduced. `bin/leak-guard.cjs` holds `assertNoLeak`, the check that keeps
+results a patch introduced. `bin/leak-guard.ts` holds `assertNoLeak`, the check that keeps
 scanner material out of fixer and auditor prompts.
 `bin/normalize.cjs` turns scanner output into findings. `bin/validate.cjs` gates every write
 against a schema. `bin/gate.ts` holds the threshold and the ordering. `bin/patch-guard.cjs`
-screens a diff. `bin/stage.cjs` holds `stageOf` and `evaluateVerification`, the only definitions of where a
+screens a diff. `bin/stage.ts` holds `stageOf` and `evaluateVerification`, the only definitions of where a
 record is and whether a fix is verified. `bin/resume.cjs` picks the run directory, merges the
 records already on disk, and clears the leftovers of an attempt that a crashed run never
 recorded. `bin/witness-run.cjs` runs the differential witness
