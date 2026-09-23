@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-results.schema.json",
+  "title": "sast-remediate agent return envelopes",
+  "description": "What each agent role must return. Exactly one JSON object, no surrounding prose. A malformed or prose-wrapped result is discarded whole, never repaired.",
+
+  "$defs": {
+
+    "triage": {
+      "description": "Returned by a triage agent. Either a verdict or a split.",
+      "oneOf": [
+        { "$ref": "finding.schema.json#/$defs/triage" },
+        {
+          "type": "object", "additionalProperties": false, "required": ["split"],
+          "properties": {
+            "split": {
+              "type": "array", "minItems": 2,
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["site_lines", "why"],
+                "properties": {
+                  "site_lines": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 1 } },
+                  "why": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "fix": {
+      "description": "Returned by a fixer. cannot_fix is a real outcome, not a failure to try: a second independent mind reading the frozen contract may decline before any patch exists.",
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["outcome", "declared_files", "enforcement_note"],
+          "properties": {
+            "outcome": { "const": "patched" },
+            "declared_files": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+            "enforcement_note": { "type": "string", "minLength": 1 },
+            "witness_path": { "type": ["string", "null"] }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["outcome", "reason"],
+          "properties": {
+            "outcome": { "const": "cannot_fix" },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+
+    "audit": {
+      "description": "Returned by an auditor that did not triage and did not fix this finding. Four verdicts, one of them named for the failure we most expect.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verdict", "trace", "stopped_at", "uncovered_siblings", "explanation"],
+      "properties": {
+        "verdict": {
+          "enum": ["enforces_invariant", "silences_rule", "moves_trust", "incomplete_enforcement"]
+        },
+        "trace": {
+          "description": "The frozen violating_input walked through the PATCHED source, step by step.",
+          "type": "array", "minItems": 1,
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["step", "loc"],
+            "properties": {
+              "step": { "type": "string", "minLength": 1 },
+              "loc": { "$ref": "finding.schema.json#/$defs/code_ref" }
+            }
+          }
+        },
+        "stopped_at": {
+          "description": "Where the counterexample dies. Null with enforces_invariant is rejected by the oneOf below, not merely by this sentence.",
+          "oneOf": [{ "type": "null" }, { "$ref": "finding.schema.json#/$defs/code_ref" }]
+        },
+        "uncovered_siblings": {
+          "description": "Sibling sites the patch did not cover. Non-empty forces incomplete_enforcement, enforced by the oneOf below.",
+          "type": "array", "items": { "$ref": "finding.schema.json#/$defs/code_ref" }
+        },
+        "explanation": { "type": "string", "minLength": 1 }
+      },
+      "oneOf": [
+        {
+          "description": "enforces_invariant must point at the line where the counterexample dies, and may not leave a sibling site uncovered.",
+          "properties": {
+            "verdict": { "const": "enforces_invariant" },
+            "stopped_at": { "$ref": "finding.schema.json#/$defs/code_ref" },
+            "uncovered_siblings": { "maxItems": 0 }
+          }
+        },
+        {
+          "description": "The only verdict allowed to carry uncovered siblings.",
+          "properties": { "verdict": { "const": "incomplete_enforcement" } }
+        },
+        {
+          "description": "A refuting verdict needs no stopped_at, but an uncovered sibling would make it incomplete_enforcement instead.",
+          "properties": {
+            "verdict": { "enum": ["silences_rule", "moves_trust"] },
+            "uncovered_siblings": { "maxItems": 0 }
+          }
+        }
+      ]
+    }
+  }
+}

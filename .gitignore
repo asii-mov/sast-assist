@@ -1,0 +1,6 @@
+# Scratch runs, scanner databases and nested target repos
+.work/
+# Plugin hook state, per machine
+.claude/hooks/state/
+**/.claude/hooks/state/
+node_modules/

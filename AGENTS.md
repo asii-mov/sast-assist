@@ -1,0 +1,20 @@
+# AGENTS.md
+
+## Learned User Preferences
+
+- `reference/security-audit-skill/` is vendored the reference prior art, included only so the model can see the target shape. It is never the deliverable and is not to be copied; the skill we ship is `skills/sast-remediate/`.
+- Answer in plain, non-technical language. Technical explanations are repeatedly met with "in layman terms". Lead with the layman version instead of waiting to be asked for it.
+- The intended deliverable is a single command that runs Semgrep/CodeQL, uses AI to drop false positives, then patches the real findings. The verification gate was explicitly dropped ("ignore the verifier, we can verify the code"); do not reintroduce it as a precondition on patching.
+- On 2026-09-22 the user asked for multi-item fix work to be split: opus (Opus 5.5) writes one technical plan per item (kept under `docs/plans/`, e.g. `R1-resume.md` to `R5-verify-full.md`), then sonnet subagents execute them. Asked once so far; offer the same split for similar batches.
+- A `/doctor` pass proposed disabling 80 zero-usage plugins and deleting the duplicated Context7 guidance in `~/.claude/rules/context7.md`; the user declined and kept all 85 plugins and the duplication. Do not re-propose that cleanup. The skill-listing overflow is an accepted cost.
+
+## Learned Workspace Facts
+
+- The session scratchpad under `/tmp/claude-1000/...` is wiped between sessions; anything that must survive (clones, candidate packages, rubrics, notes) belongs in the repo tree, not the scratchpad.
+- `semgrep`, `codeql` and `uv` are installed on PATH at `~/.local/bin` (semgrep 1.177.0, CodeQL 2.26.4); `node` is v22 at `/usr/bin/node`. Scanners do not need installing before a run.
+- Subagent fan-out repeatedly dies on session rate limits (HTTP 429): one dropout during the design arena, four interrogate reviewers, two more on the implementation fan-out, the sonnet executor for the R3 rescan-config plan, and a prior occurrence recorded in `.work/TODO.md`. Plan multi-agent steps to tolerate dropouts, or do the work serially.
+- The skill listing is ~96 skills at ~5,086 est. tokens against a budget of roughly 1% of the context window (~2,000), so entries get truncated out of it. That is why pstack skills invoked by slash command (`/pstack:interrogate`, `/pstack:poteto-mode`, `/pstack:how`) can be absent from the session listing while present on disk under `~/.claude/plugins/cache/cursor-plugins/pstack/<version>/skills/` and `~/Projects/cursor-plugins/claude-marketplace/pstack/skills/`. Check both before concluding a named skill is missing.
+- pstack's default model slugs (`grok-4.6-fast-xhigh`, `gpt-5.6-sol-max`, `claude-fable-5-1-thinking-max`) do not resolve here, and there is no `~/.claude/rules/pstack-models.md` override. Available Agent models are opus, sonnet, haiku and fable, but the user has said never to use fable; use opus (Opus 5.5) wherever fable would go.
+- The pipeline is run from `skills/sast-remediate` as `node bin/run.cjs --target=<repo> --scans=<dir> --out=<dir>` (optional `--scanners=semgrep`, `--semgrep-config=<pack>`, `--codeql-suite=<suite>`, `--model=opus`). Scans and rescans default to `p/default` and `security-extended` (`DEFAULT_SCAN_CONFIG` in `bin/scan.cjs`). The saved scans in `.work/targets/scans-mkcert` were made by hand with `--config p/trailofbits`, run from inside the target's root, so reusing them needs `--semgrep-config=p/trailofbits`. Agents run with `--restricted`, which ignores user settings, so pass `--model` or they use the CLI's built-in default.
+- Live targets and run outputs live under `.work/targets/` (e.g. `mkcert`, `vuln-app-git`). `fixtures/vuln-app` and the project root are not git repos, so the fix stage needs the git-backed copy `.work/targets/vuln-app-git`. Further `git clone`s of external GitHub repos have been denied by the permission layer, so new live targets may not be obtainable.
+- Live runs against real targets keep surfacing bugs in the joins between components that the 150+ fake-agent tests never catch; treat a live run, not the green suite, as the real check.

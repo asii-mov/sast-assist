@@ -1,0 +1,409 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "finding.schema.json",
+  "title": "sast-remediate Finding",
+  "description": "One root cause. The unit of triage, patching, witnessing, commit and review.",
+  "type": "array",
+  "items": { "$ref": "#/$defs/finding" },
+
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "id", "run_id", "invariant_class", "cluster", "sites",
+                   "flow", "context", "lease", "triage", "gate", "patches", "disposition", "prior"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "id": { "type": "string", "pattern": "^f_[0-9a-f]{16}$" },
+        "run_id": { "type": "string", "minLength": 1 },
+        "invariant_class": { "$ref": "#/$defs/invariant_class" },
+        "cluster": { "$ref": "#/$defs/cluster_key" },
+        "sites": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/site" } },
+        "flow": { "$ref": "#/$defs/taint_flow" },
+        "context": { "$ref": "#/$defs/source_context" },
+        "lease": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/lease" }] },
+        "triage": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/triage" }] },
+        "gate": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/gate_decision" }] },
+        "patches": { "type": "array", "maxItems": 2, "items": { "type": "object" } },
+        "disposition": { "oneOf": [{ "type": "null" }, { "type": "object" }] },
+        "prior": { "oneOf": [{ "type": "null" }, { "type": "object" }] }
+      }
+    },
+
+    "invariant_class": {
+      "enum": ["injection.sql", "injection.command", "injection.code", "injection.template",
+               "injection.path", "injection.ldap", "injection.xml", "injection.log",
+               "xss.reflected", "xss.stored", "xss.dom",
+               "deserialization.unsafe", "ssrf", "redirect.open",
+               "authz.missing", "authn.weak", "session.weak",
+               "crypto.weak", "crypto.misuse", "secret.hardcoded", "randomness.weak",
+               "race.toctou", "memory.unsafe", "dos.uncontrolled",
+               "disclosure.sensitive", "config.insecure", "other"]
+    },
+
+    "cluster_key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["invariant_class", "sink_symbol", "source_class"],
+      "properties": {
+        "invariant_class": { "$ref": "#/$defs/invariant_class" },
+        "sink_symbol": { "type": ["string", "null"] },
+        "source_class": { "type": ["string", "null"] }
+      }
+    },
+
+    "site": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["locus", "observations"],
+      "properties": {
+        "locus": { "$ref": "#/$defs/locus" },
+        "observations": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/observation" } }
+      }
+    },
+
+    "locus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "symbol", "sink_digest", "line_at_scan"],
+      "properties": {
+        "file": { "type": "string", "minLength": 1, "pattern": "^[^/].*$" },
+        "symbol": { "type": ["string", "null"] },
+        "sink_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "line_at_scan": { "type": "integer", "minimum": 1 }
+      }
+    },
+
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scanner", "rule_id", "rule_name", "native_fingerprint", "message",
+                   "claimed", "cwe", "owasp", "engine", "suppressed_at_source",
+                   "raw_pointer", "seen_in_rounds"],
+      "properties": {
+        "scanner": { "enum": ["semgrep", "codeql"] },
+        "rule_id": { "type": "string", "minLength": 1 },
+        "rule_name": { "type": ["string", "null"] },
+        "native_fingerprint": { "type": ["string", "null"] },
+        "message": { "type": "string" },
+        "claimed": { "$ref": "#/$defs/claimed_severity" },
+        "cwe": { "type": "array", "items": { "type": "string" } },
+        "owasp": { "type": "array", "items": { "type": "string" } },
+        "engine": { "type": ["string", "null"] },
+        "suppressed_at_source": { "type": "boolean" },
+        "raw_pointer": { "type": "string" },
+        "seen_in_rounds": { "type": "array", "items": { "type": "integer" } }
+      }
+    },
+
+    "claimed_severity": {
+      "description": "Each scanner's claim in its OWN vocabulary. Never collapsed to a shared enum: no meaning-preserving mapping exists. Only priority() and the report may read this. The gate cannot.",
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "severity", "impact", "likelihood", "confidence"],
+          "properties": {
+            "kind": { "const": "semgrep" },
+            "severity": { "enum": ["ERROR", "WARNING", "INFO"] },
+            "impact": { "enum": ["LOW", "MEDIUM", "HIGH", null] },
+            "likelihood": { "enum": ["LOW", "MEDIUM", "HIGH", null] },
+            "confidence": { "enum": ["LOW", "MEDIUM", "HIGH", null] }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "problem_severity", "security_severity"],
+          "properties": {
+            "kind": { "const": "codeql" },
+            "problem_severity": { "enum": ["error", "warning", "recommendation", null] },
+            "security_severity": { "type": ["number", "null"], "minimum": 0, "maximum": 10 }
+          }
+        }
+      ]
+    },
+
+    "flow_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "line", "symbol", "role", "code", "note"],
+      "properties": {
+        "file": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 },
+        "symbol": { "type": ["string", "null"] },
+        "role": { "enum": ["source", "propagation", "sink"] },
+        "code": { "type": "string" },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+
+    "taint_flow": {
+      "description": "Two constructors, never a sometimes-empty field. The triage prompt builder switches on kind.",
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "provenance", "steps"],
+          "properties": {
+            "kind": { "const": "traced" },
+            "provenance": { "enum": ["codeql_codeflows", "semgrep_dataflow_trace"] },
+            "steps": { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/flow_step" } }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "sink", "reason"],
+          "properties": {
+            "kind": { "const": "sink_only" },
+            "sink": { "$ref": "#/$defs/flow_step" },
+            "reason": { "const": "scanner_emitted_no_flow" }
+          }
+        }
+      ]
+    },
+
+    "source_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scan_commit", "source_hash", "enclosing_excerpt"],
+      "properties": {
+        "scan_commit": { "type": ["string", "null"] },
+        "source_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "enclosing_excerpt": { "type": "string" }
+      }
+    },
+
+    "lease": {
+      "type": "object", "additionalProperties": false,
+      "required": ["agent_id", "role", "started_at", "ttl_s"],
+      "properties": {
+        "agent_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+        "role": { "enum": ["triage", "fix", "audit"] },
+        "started_at": { "type": "string" },
+        "ttl_s": { "type": "integer", "minimum": 1 }
+      }
+    },
+
+    "severity": { "enum": ["critical", "high", "medium", "low", "informational"] },
+
+    "triage": {
+      "description": "Severity exists ONLY on the exploitable branch. Absent from the type elsewhere, so the gate cannot read a severity nobody established.",
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["verdict", "established_by", "contract", "severity", "impact",
+                       "likelihood", "blast_radius"],
+          "properties": {
+            "verdict": { "const": "exploitable" },
+            "established_by": { "$ref": "#/$defs/provenance" },
+            "contract": { "$ref": "#/$defs/security_contract" },
+            "severity": { "$ref": "#/$defs/severity" },
+            "impact": { "type": "string", "minLength": 1 },
+            "likelihood": { "type": "string", "minLength": 1 },
+            "blast_radius": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["verdict", "established_by", "refutation"],
+          "properties": {
+            "verdict": { "const": "not_exploitable" },
+            "established_by": { "$ref": "#/$defs/provenance" },
+            "refutation": {
+              "type": "object", "additionalProperties": false,
+              "required": ["reason", "control", "explanation"],
+              "properties": {
+                "reason": {
+                  "enum": ["input_is_not_attacker_controlled",
+                           "control_on_path_already_enforces_invariant",
+                           "sink_is_not_the_dangerous_overload",
+                           "defense_in_depth_gap_only",
+                           "unreachable_code",
+                           "test_or_fixture_or_generated_code",
+                           "rule_semantics_mismatch"]
+                },
+                "control": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/code_ref" }] },
+                "explanation": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["verdict", "established_by", "hypothesis", "blocker"],
+          "properties": {
+            "verdict": { "const": "undecidable" },
+            "established_by": { "$ref": "#/$defs/provenance" },
+            "hypothesis": { "$ref": "#/$defs/security_contract" },
+            "blocker": {
+              "type": "object", "additionalProperties": false,
+              "required": ["missing_fact", "resolve_by", "plan"],
+              "properties": {
+                "missing_fact": { "type": "string", "minLength": 1 },
+                "resolve_by": { "enum": ["owner_observation", "local_check"] },
+                "plan": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "provenance": { "enum": ["agent", "carried_from_prior_run", "deterministic_prepass"] },
+
+    "code_ref": {
+      "type": "object", "additionalProperties": false,
+      "required": ["file", "line", "note"],
+      "properties": {
+        "file": { "type": "string" }, "line": { "type": "integer", "minimum": 1 },
+        "note": { "type": "string" }
+      }
+    },
+
+    "security_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["invariant", "violating_input", "enforcement_point", "witness",
+                   "writable_scope", "forbidden_resolutions"],
+      "properties": {
+        "invariant": {
+          "type": "string", "minLength": 1,
+          "description": "About VALUES and BOUNDARIES, never about rules. validate.cjs rejects scanner proper nouns, scanner-artifact vocabulary, and the SYNTACTIC FORM of a Semgrep or CodeQL rule id. Form rather than a name list, because no list closes on rule ids this skill has never seen. bin/stage.cjs holds no copy of this; the schema is the only definition.",
+          "not": { "pattern": "(?i)(nosemgrep|semgrep|codeql|lgtm|sonar|snyk|bandit|brakeman|gosec|checkmarx|fortify|veracode|\\bsast\\b|static[ -]analy(?:sis|ser|zer)|\\bscanner\\b|\\blinter\\b|\\brule[ _-]?id\\b|\\bcheck[ _-]?id\\b|\\bquery[ _-]?id\\b|\\bsarif\\b|\\bwarning\\b|\\bfinding\\b|\\balert\\b|suppress|stops? firing|goes? quiet|false positive|\\b(?:js|javascript|ts|typescript|py|python|java|cpp|cs|go|rb|ruby|swift|rust|ql|actions)/[a-z0-9]+(?:-[a-z0-9]+)*(?:/[a-z0-9-]+)*\\b|\\b[a-z][a-z0-9_]*(?:\\.[a-z0-9_-]+){3,}\\b)" }
+        },
+        "violating_input": { "$ref": "#/$defs/fixer_visible_text" },
+        "enforcement_point": {
+          "type": "object", "additionalProperties": false,
+          "required": ["file", "symbol", "rationale"],
+          "properties": {
+            "file": { "type": "string" }, "symbol": { "type": ["string", "null"] },
+            "rationale": { "$ref": "#/$defs/fixer_visible_text" }
+          }
+        },
+        "witness": { "$ref": "#/$defs/witness" },
+        "writable_scope": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "forbidden_resolutions": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/fixer_visible_text" } }
+      }
+    },
+
+    "fixer_visible_text": {
+      "description": "Any contract text that reaches the fixer's prompt. The invariant carries the stricter rule-id form check; these fields describe inputs, paths and hostnames, which that check would misread, so they reject the scanner's name and vocabulary only. A live triage wrote 'comments that silence the tool (nosemgrep, lgtm, codeql suppression)' into forbidden_resolutions; describe a forbidden move by its effect, never by the tool that would notice it.",
+      "type": "string", "minLength": 1,
+      "not": { "pattern": "(?i)(nosemgrep|semgrep|codeql|lgtm|sonar|snyk|bandit|brakeman|gosec|checkmarx|fortify|veracode|\\bsast\\b|static[ -]analy(?:sis|ser|zer)|\\bscanner\\b|\\blinter\\b|\\brule[ _-]?id\\b|\\bcheck[ _-]?id\\b|\\bquery[ _-]?id\\b|\\bsarif\\b|stops? firing|goes? quiet|false positive)" }
+    },
+
+    "witness": {
+      "description": "Strongest tier the repo supports: dynamic > executable > structural > argued. The pre-patch signal is mandatory on every mechanical tier; that is what a suppression cannot produce.",
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["tier", "harness_id", "attack", "observable", "control",
+                       "expected_pre_fix", "expected_post_fix"],
+          "properties": {
+            "tier": { "const": "dynamic" },
+            "harness_id": { "type": "string", "minLength": 1 },
+            "attack": { "$ref": "#/$defs/http_exchange" },
+            "observable": { "$ref": "#/$defs/observable" },
+            "control": { "$ref": "#/$defs/functional_control" },
+            "expected_pre_fix": { "const": "observable_fires" },
+            "expected_post_fix": { "const": "observable_absent" }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["tier", "framework", "entrypoint", "attack_input", "asserts",
+                       "command_template", "control", "expected_pre_fix", "expected_post_fix"],
+          "properties": {
+            "tier": { "const": "executable" },
+            "framework": { "type": "string", "minLength": 1 },
+            "entrypoint": { "type": "string", "minLength": 1 },
+            "attack_input": { "type": "string", "minLength": 1 },
+            "asserts": { "type": "string", "minLength": 1 },
+            "command_template": { "type": "string", "minLength": 1 },
+            "control": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/functional_control" }] },
+            "expected_pre_fix": { "const": "fail" },
+            "expected_post_fix": { "const": "pass" }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["tier", "rule_yaml", "anchor", "expected_pre_fix", "expected_post_fix"],
+          "properties": {
+            "tier": { "const": "structural" },
+            "rule_yaml": { "type": "string", "minLength": 1 },
+            "anchor": { "$ref": "#/$defs/locus" },
+            "expected_pre_fix": { "const": "match" },
+            "expected_post_fix": { "const": "no_match" }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["tier", "obstacle", "why"],
+          "properties": {
+            "tier": { "const": "argued" },
+            "obstacle": { "enum": ["no_test_harness", "no_runnable_entrypoint", "no_app_harness",
+                                   "invariant_is_configuration",
+                                   "invariant_is_cryptographic_parameter",
+                                   "requires_external_service"] },
+            "why": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+
+    "http_exchange": {
+      "type": "object", "additionalProperties": false,
+      "required": ["method", "path", "headers", "query", "body", "as_principal"],
+      "properties": {
+        "method": { "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] },
+        "path": { "type": "string", "pattern": "^/" },
+        "headers": { "type": "object" },
+        "query": { "type": "object" },
+        "body": { "type": "object" },
+        "as_principal": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "observable": {
+      "description": "Closed union so the blast radius of a successful witness is a design-time decision, not an agent's judgment mid-request.",
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["kind", "equals"],
+          "properties": { "kind": { "const": "status_code" }, "equals": { "type": "integer" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "canary"],
+          "properties": { "kind": { "const": "body_contains" }, "canary": { "type": "string", "minLength": 1 } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "path", "equals"],
+          "properties": { "kind": { "const": "body_json_path" }, "path": { "type": "string" }, "equals": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "name", "matches"],
+          "properties": { "kind": { "const": "header_present" }, "name": { "type": "string" }, "matches": { "type": "string" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "query", "in_fixture_db"],
+          "properties": { "kind": { "const": "row_appears" }, "query": { "type": "string" }, "in_fixture_db": { "const": true } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "marker"],
+          "properties": { "kind": { "const": "reflected_unescaped" }, "marker": { "type": "string" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "ms", "baseline_ms"],
+          "properties": { "kind": { "const": "latency_exceeds" }, "ms": { "type": "number" }, "baseline_ms": { "type": "number" } } }
+      ]
+    },
+
+    "functional_control": {
+      "description": "A legitimate request that must pass on BOTH trees. Without it, 'the attack stopped working' is satisfiable by disabling the endpoint.",
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["kind", "exchange", "expect"],
+          "properties": { "kind": { "const": "http" }, "exchange": { "$ref": "#/$defs/http_exchange" },
+                          "expect": { "$ref": "#/$defs/observable" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "command_template"],
+          "properties": { "kind": { "const": "existing_test" }, "command_template": { "type": "string", "minLength": 1 } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "why"],
+          "properties": { "kind": { "const": "unavailable" }, "why": { "type": "string", "minLength": 1 } } }
+      ]
+    },
+
+    "gate_decision": {
+      "type": "object", "additionalProperties": false,
+      "required": ["action", "reason"],
+      "properties": {
+        "action": { "enum": ["fix", "report_only"] },
+        "threshold": { "$ref": "#/$defs/severity" },
+        "reason": { "enum": ["at_or_above_threshold", "below_threshold",
+                             "not_exploitable", "undecidable"] }
+      }
+    }
+  }
+}
