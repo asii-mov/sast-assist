@@ -9,7 +9,7 @@
 // observation and never a verdict, and only an exploitable finding ever carries a severity.
 
 const { VERIFY_LEVELS, OBLIGATIONS } = require('./stage.cjs');
-const { claimedRank } = require('./gate.cjs');
+const { claimedRank } = require('./gate.ts');
 
 // ---------------------------------------------------------------------- markdown primitives
 

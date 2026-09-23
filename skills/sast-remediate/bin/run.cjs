@@ -22,7 +22,7 @@ const FINDING_SCHEMA = path.join(ROOT, 'schema/finding.schema.json');
 const AGENT_SCHEMA = path.join(ROOT, 'schema/agent-results.schema.json');
 
 const { stageOf, evaluateVerification, VERIFY_LEVELS, excused } = require('./stage.cjs');
-const { gate, order } = require('./gate.cjs');
+const { gate, order } = require('./gate.ts');
 const { normalize, makeRepo } = require('./normalize.cjs');
 const { runScanners, onPath, trim, baselineOf, rescan, DEFAULT_SCAN_CONFIG, SUITE_NAME, semgrepConfigArg, SCANNERS } = require('./scan.cjs');
 const { validate } = require('./validate.cjs');

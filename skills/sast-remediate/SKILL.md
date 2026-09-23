@@ -55,11 +55,11 @@ The parent is the only writer of `run-metadata.json`, `findings/<id>.json`, `REM
 ## What runs today
 
 The deterministic core is built and tested. `bin/normalize.cjs`, `bin/validate.cjs`,
-`bin/gate.cjs`, `bin/stage.cjs`, `bin/patch-guard.cjs`, and the `dynamic` tier of
+`bin/gate.ts`, `bin/stage.cjs`, `bin/patch-guard.cjs`, and the `dynamic` tier of
 `bin/witness-run.cjs` all work and are covered by `test/run-all.sh`.
 
 `bin/run.cjs` drives them. One command runs every stage: `run.cjs --target=DIR`. It spawns the
-triage and fix agents through `bin/agent.ts`, orders fix work with `order()` from `bin/gate.cjs`,
+triage and fix agents through `bin/agent.ts`, orders fix work with `order()` from `bin/gate.ts`,
 and writes the artifacts with `bin/report.cjs`. Re-running it is the resume path.
 Agents run with the target's Claude settings, `CLAUDE.md` and hooks shut out. Each gets only the
 tools its role needs, and none gets a shell. The harness, not the fixer, commits each fix, and
@@ -94,13 +94,13 @@ and prior-run carry. Each resolved finding gets a real `Triage` with `establishe
 skipped state. A path-policy rejection is a policy call, not a security claim, and the report
 says so under its own heading.
 
-**3. Triage.** One agent per finding, ordered by `priority()` from `bin/gate.cjs`. Build the
+**3. Triage.** One agent per finding, ordered by `priority()` from `bin/gate.ts`. Build the
 prompt per `references/TRIAGE.md`, switching on `flow.kind`. Budget bounds the run. Findings past
 the budget stay untriaged on disk and the next run picks them up. A triage call that returns no
 usable answer is not a verdict: the finding stays at triage, the run ends `incomplete` and names
 it, and the next run asks again.
 
-**4. Gate.** `gate(triage, policy)` from `bin/gate.cjs`. Pure, total, no LLM. It takes a Triage
+**4. Gate.** `gate(triage, policy)` from `bin/gate.ts`. Pure, total, no LLM. It takes a Triage
 and a Policy and nothing else, so a scanner's severity cannot reach the fix decision.
 
 **5. Fix and verify.** `references/FIX-AND-VERIFY.md` owns this. One finding at a time in
@@ -189,7 +189,7 @@ All zero-dependency Node. Nothing is installed into the target.
 results a patch introduced. `bin/leak-guard.cjs` holds `assertNoLeak`, the check that keeps
 scanner material out of fixer and auditor prompts.
 `bin/normalize.cjs` turns scanner output into findings. `bin/validate.cjs` gates every write
-against a schema. `bin/gate.cjs` holds the threshold and the ordering. `bin/patch-guard.cjs`
+against a schema. `bin/gate.ts` holds the threshold and the ordering. `bin/patch-guard.cjs`
 screens a diff. `bin/stage.cjs` holds `stageOf` and `evaluateVerification`, the only definitions of where a
 record is and whether a fix is verified. `bin/resume.cjs` picks the run directory, merges the
 records already on disk, and clears the leftovers of an attempt that a crashed run never

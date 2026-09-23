@@ -20,7 +20,7 @@ no attempt at all. Its branch is removed, the finding stays open, and the next r
 At most two attempts. There is no attempt three, and the cap is in the type. Attempt two receives
 the typed failures from attempt one, never a bare "try again."
 
-Findings are fixed one at a time in `order()` from `bin/gate.cjs`. Every branch starts at base, so
+Findings are fixed one at a time in `order()` from `bin/gate.ts`. Every branch starts at base, so
 two fixes never see each other's edits.
 
 ## The fixer

@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-'use strict';
 // The ONLY place the threshold is interpreted. Pure, total, no LLM, thirty lines of policy.
 //
 // gate() takes a Triage and a Policy. It takes NOTHING ELSE, and that is the whole point:
@@ -7,6 +6,8 @@
 // severity cannot reach the fix decision even by accident. Two of the four arena candidates
 // clamped instance severity to a scanner-derived ceiling and called it a spend optimization.
 // It is not. It lets the scanner's guess cap what the fix decision can see.
+
+import fs from 'fs';
 
 const RANK = { informational: 0, low: 1, medium: 2, high: 3, critical: 4 };
 const rank = (s) => (s in RANK ? RANK[s] : -1);
@@ -90,12 +91,11 @@ function priority(f) {
 const order = (findings) =>
   [...findings].sort((a, b) => priority(b) - priority(a) || a.id.localeCompare(b.id));
 
-module.exports = { gate, priority, order, rank, claimedRank, RANK };
+export { gate, priority, order, rank, claimedRank, RANK };
 
-if (require.main === module) {
-  const fs = require('fs');
+if (import.meta.main) {
   const [file, fixAt = 'medium'] = process.argv.slice(2);
-  if (!file) { console.error('usage: gate.cjs <findings.json> [fix_at]'); process.exit(2); }
+  if (!file) { console.error('usage: gate.ts <findings.json> [fix_at]'); process.exit(2); }
   const findings = JSON.parse(fs.readFileSync(file, 'utf8'));
   for (const f of order(findings)) {
     const g = f.triage ? gate(f.triage, { fix_at: fixAt }) : null;
