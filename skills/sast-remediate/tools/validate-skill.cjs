@@ -60,7 +60,7 @@ ok('every reference file is cited by SKILL.md');
 // ---- schemas parse and refs resolve
 const { validate } = require(path.join(ROOT, 'bin/validate.ts'));
 const schemaDir = path.join(ROOT, 'schema');
-for (const f of fs.readdirSync(schemaDir)) {
+for (const f of fs.readdirSync(schemaDir).filter((x) => x.endsWith('.json'))) {
   const p = path.join(schemaDir, f);
   let doc;
   try { doc = JSON.parse(fs.readFileSync(p, 'utf8')); }
