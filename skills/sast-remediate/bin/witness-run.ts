@@ -1,21 +1,21 @@
 #!/usr/bin/env node
-'use strict';
 // The differential witness runner. Deterministic. No agent grades a witness.
 //
 // The parent performs every request itself and records the transcript, so evidence never
 // originates inside the target-controlled process and never has to be promoted out of it.
 // That is why this skill carries no file-promotion procedure.
 
-const net = require('net');
-const http = require('http');
-const { boot } = require('./app-harness.cjs');
+import net from 'net';
+import http from 'http';
+import { boot } from './app-harness.ts';
+import type { HttpResult } from './app-harness.ts';
 
 const REDACT_ALLOW = new Set(['content-type', 'content-length', 'location', 'x-request-id']);
 
-function request(baseUrl, ex, timeoutMs = 8000) {
+function request(baseUrl, ex, timeoutMs = 8000): Promise<HttpResult & { ms: number }> {
   return new Promise((resolve) => {
     const u = new URL(ex.path, baseUrl);
-    for (const [k, v] of Object.entries(ex.query || {})) u.searchParams.set(k, v);
+    for (const [k, v] of Object.entries(ex.query || {})) u.searchParams.set(k, String(v));
     const bodyText = ex.body && ex.body.kind === 'json' ? JSON.stringify(ex.body.value)
       : ex.body && ex.body.kind === 'raw' ? ex.body.value
       : ex.body && ex.body.kind === 'form' ? new URLSearchParams(ex.body.value).toString()
@@ -41,7 +41,7 @@ function request(baseUrl, ex, timeoutMs = 8000) {
           status: res.statusCode, headers: res.headers, body, ms: Date.now() - started,
         }));
       });
-    req.on('error', (e) => resolve({ status: 0, headers: {}, body: '', ms: Date.now() - started, error: e.code }));
+    req.on('error', (e: NodeJS.ErrnoException) => resolve({ status: 0, headers: {}, body: '', ms: Date.now() - started, error: e.code }));
     req.setTimeout(timeoutMs, () => { req.destroy(); resolve({ status: 0, headers: {}, body: '', ms: timeoutMs, error: 'timeout' }); });
     if (bodyText !== null) req.write(bodyText);
     req.end();
@@ -134,7 +134,7 @@ function classify(r) {
 
 // The dynamic tier is opt-in. The caller passes { allowDynamic: true } only when the operator
 // asked for it, so a repository that happens to have a bootable app is never driven by default.
-async function runWitness(w, trees, opts = {}) {
+async function runWitness(w, trees, opts: { allowDynamic?: boolean } = {}) {
   if (w.tier === 'dynamic' && !opts.allowDynamic) {
     throw new Error('dynamic witness tier is opt-in; pass --witness=dynamic (see design/FUTURE-IMPROVEMENTS.md)');
   }
@@ -161,9 +161,10 @@ async function runWitnessInner(w, trees) {
   return { ...result, transcript, failure: classify(result) };
 }
 
-const freePort = () => new Promise((resolve) => {
+const freePort = (): Promise<number> => new Promise((resolve) => {
   const s = net.createServer();
-  s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); });
+  // A TCP listener's address() is always an AddressInfo; only a pipe or socket path is a string.
+  s.listen(0, '127.0.0.1', () => { const p = (s.address() as net.AddressInfo).port; s.close(() => resolve(p)); });
 });
 
 const unavailable = (reason) => ({ status: 'unavailable', reason });
@@ -206,18 +207,18 @@ async function witnessObligations(w, { baseDir, headDir, harnesses }, { allowDyn
     }
 
     const r = await runWitness(w, { base: b, head: h }, { allowDynamic: true });
-    const out = {};
-    out.differential_witness = r.differential_ok
-      ? { status: 'pass', detail: r.post.detail, transcript: r.transcript }
-      : { status: 'fail', reason: r.failure || 'witness_not_differential', transcript: r.transcript };
-    out.functional_control = r.control_ok
-      ? { status: 'pass', detail: r.control.detail }
-      : { status: 'fail', reason: r.control.passed_pre === false ? 'control_failed_on_base' : 'control_failed_on_patched_tree' };
-    return out;
+    return {
+      differential_witness: r.differential_ok
+        ? { status: 'pass', detail: r.post.detail, transcript: r.transcript }
+        : { status: 'fail', reason: r.failure || 'witness_not_differential', transcript: r.transcript },
+      functional_control: r.control_ok
+        ? { status: 'pass', detail: r.control.detail }
+        : { status: 'fail', reason: r.control.passed_pre === false ? 'control_failed_on_base' : 'control_failed_on_patched_tree' },
+    };
   } finally {
     b.kill();
     if (h) h.kill();
   }
 }
 
-module.exports = { runWitness, runDynamic, observed, request, boot, witnessObligations, freePort };
+export { runWitness, runDynamic, observed, request, boot, witnessObligations, freePort };

@@ -26,7 +26,7 @@ const { gate, order } = require('./gate.ts');
 const { normalize, makeRepo } = require('./normalize.ts');
 const { runScanners, onPath, trim, baselineOf, rescan, DEFAULT_SCAN_CONFIG, SUITE_NAME, semgrepConfigArg, SCANNERS } = require('./scan.cjs');
 const { validate } = require('./validate.ts');
-const { guardDiff } = require('./patch-guard.cjs');
+const { guardDiff } = require('./patch-guard.ts');
 const { defaultOutDir, readRecorded, mergeExisting, clearAttempt, incompleteReason } = require('./resume.cjs');
 const { assertNoLeak, leakError, recordTerms, authoredProse } = require('./leak-guard.ts');
 
@@ -628,7 +628,7 @@ function runRegressionSuite(patch, ctx) {
 }
 
 async function runDifferentialWitness(contract, patch, ctx) {
-  const { witnessObligations } = require('./witness-run.cjs');
+  const { witnessObligations } = require('./witness-run.ts');
   const w = contract.witness;
   try {
     return await witnessObligations(w,
@@ -820,7 +820,7 @@ async function run(opts, deps = realDeps()) {
 
   const testCommand = discoverTestCommand(target);
   let appHarness = [];
-  try { appHarness = require('./app-harness.cjs').discoverAppHarness(target); } catch { /* optional */ }
+  try { appHarness = require('./app-harness.ts').discoverAppHarness(target); } catch { /* optional */ }
   const dynamicOffered = opts.witness === 'dynamic' && appHarness.length > 0;
   if (opts.witness === 'dynamic' && !dynamicOffered) {
     deps.log('--witness=dynamic: no app harness discovered, so triage is offered argued only');

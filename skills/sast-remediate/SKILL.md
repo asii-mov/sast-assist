@@ -55,8 +55,8 @@ The parent is the only writer of `run-metadata.json`, `findings/<id>.json`, `REM
 ## What runs today
 
 The deterministic core is built and tested. `bin/normalize.ts`, `bin/validate.ts`,
-`bin/gate.ts`, `bin/stage.ts`, `bin/patch-guard.cjs`, and the `dynamic` tier of
-`bin/witness-run.cjs` all work and are covered by `test/run-all.sh`.
+`bin/gate.ts`, `bin/stage.ts`, `bin/patch-guard.ts`, and the `dynamic` tier of
+`bin/witness-run.ts` all work and are covered by `test/run-all.sh`.
 
 `bin/run.cjs` drives them. One command runs every stage: `run.cjs --target=DIR`. It spawns the
 triage and fix agents through `bin/agent.ts`, orders fix work with `order()` from `bin/gate.ts`,
@@ -121,7 +121,7 @@ A fix is verified only when every obligation its verify level requires passes: a
 is structurally unreachable from the verdict rather than merely forbidden in prose.
 
 1. **Frozen target.** The contract is written before the patch exists and never changes.
-2. **Deterministic guard.** `bin/patch-guard.cjs` over the diff.
+2. **Deterministic guard.** `bin/patch-guard.ts` over the diff.
 3. **Differential witness.** Signals before the patch, silent after. Strongest available tier.
    `executable` is the designed default and is not implemented; today that means the opt-in
    `dynamic` tier or a degraded `argued`. At `argued`, 3 and 4 are recorded unavailable and
@@ -189,13 +189,13 @@ All zero-dependency Node. Nothing is installed into the target.
 results a patch introduced. `bin/leak-guard.ts` holds `assertNoLeak`, the check that keeps
 scanner material out of fixer and auditor prompts.
 `bin/normalize.ts` turns scanner output into findings. `bin/validate.ts` gates every write
-against a schema. `bin/gate.ts` holds the threshold and the ordering. `bin/patch-guard.cjs`
+against a schema. `bin/gate.ts` holds the threshold and the ordering. `bin/patch-guard.ts`
 screens a diff. `bin/stage.ts` holds `stageOf` and `evaluateVerification`, the only definitions of where a
 record is and whether a fix is verified. `bin/resume.cjs` picks the run directory, merges the
 records already on disk, and clears the leftovers of an attempt that a crashed run never
-recorded. `bin/witness-run.cjs` runs the differential witness
+recorded. `bin/witness-run.ts` runs the differential witness
 and the control.
-`bin/app-harness.cjs` discovers, boots and tears down the target application, and is used only
+`bin/app-harness.ts` discovers, boots and tears down the target application, and is used only
 by the opt-in dynamic tier.
 
 `test/selftest.cjs` runs the unit suite against real scanner fixtures. `test/e2e-witness.cjs`

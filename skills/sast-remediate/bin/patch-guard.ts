@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-'use strict';
 // Deterministic diff guard. Runs before any test, any scan, any agent. Milliseconds, no LLM,
 // and no agent can argue its way past it. This is obligation 2 of seven and it catches the
 // laziest ways to make a finding disappear for free, before a single token is spent.
+
+import fs from 'fs';
 
 const SUPPRESSION = /\b(nosemgrep|nosem|noqa|NOSONAR|nosec|eslint-disable(?:-next-line|-line)?|@SuppressWarnings|pylint:\s*disable|type:\s*ignore)\b|\b(?:codeql|lgtm)\s*\[/;
 
@@ -81,7 +82,9 @@ const sameShape = (a, b) => {
 
 const ADVISORY = new Set(['sink_deleted_without_enforcement']);
 
-function guardDiff(diffText, contract, opts = {}) {
+type GuardOpts = { sinkFiles?: string[]; sinkText?: string; requireWitnessFile?: boolean };
+
+function guardDiff(diffText, contract, opts: GuardOpts = {}) {
   const violations = [];
   const files = parseDiff(diffText);
   const add = (kind, extra) => violations.push({ kind, ...extra });
@@ -163,12 +166,11 @@ function guardDiff(diffText, contract, opts = {}) {
   return { passed: blocking.length === 0, violations: blocking, advisory };
 }
 
-module.exports = { guardDiff, ADVISORY, parseDiff, tokenTypes, sameShape, globToRe, inScope };
+export { guardDiff, ADVISORY, parseDiff, tokenTypes, sameShape, globToRe, inScope };
 
-if (require.main === module) {
-  const fs = require('fs');
+if (import.meta.main) {
   const [diffPath, contractPath] = process.argv.slice(2);
-  if (!diffPath) { console.error('usage: patch-guard.cjs <diff> [contract.json]'); process.exit(2); }
+  if (!diffPath) { console.error('usage: patch-guard.ts <diff> [contract.json]'); process.exit(2); }
   const contract = contractPath ? JSON.parse(fs.readFileSync(contractPath, 'utf8')) : null;
   const r = guardDiff(fs.readFileSync(diffPath, 'utf8'), contract, { requireWitnessFile: false });
   if (r.passed) { console.log('guard: passed'); process.exit(0); }

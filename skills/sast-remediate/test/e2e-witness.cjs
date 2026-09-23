@@ -16,8 +16,8 @@ const assert = require('assert');
 
 const ROOT = path.resolve(__dirname, '..');
 const FIXTURE = path.resolve(ROOT, '../../fixtures/vuln-app');
-const { discoverAppHarness, boot } = require(path.join(ROOT, 'bin/app-harness.cjs'));
-const { runWitness, witnessObligations } = require(path.join(ROOT, 'bin/witness-run.cjs'));
+const { discoverAppHarness, boot } = require(path.join(ROOT, 'bin/app-harness.ts'));
+const { runWitness, witnessObligations } = require(path.join(ROOT, 'bin/witness-run.ts'));
 
 const HONEST = `const fs = require('fs');
 const path = require('path');

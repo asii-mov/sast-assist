@@ -23,7 +23,7 @@ A fix verified only at the function boundary can leave every one of those intact
 
 ## Harness discovery
 
-Discovered from the repository, never invented. `bin/app-harness.cjs` returns every candidate and
+Discovered from the repository, never invented. `bin/app-harness.ts` returns every candidate and
 the triage agent picks.
 
 Precedence: an explicit `[harness]` block in `.sast-remediate.toml` always wins. Then
@@ -103,5 +103,5 @@ Header values are redacted by name against an allowlist before a transcript is r
 ## Cost containment
 
 App boot is the most expensive operation in a run. Today, base and patched trees are each booted
-fresh for every attempt and torn down right after by `witnessObligations` in `bin/witness-run.cjs`;
+fresh for every attempt and torn down right after by `witnessObligations` in `bin/witness-run.ts`;
 sharing one base instance across a run is not done yet. Reset fixture state between exchanges.

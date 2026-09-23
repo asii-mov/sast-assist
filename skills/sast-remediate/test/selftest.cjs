@@ -13,7 +13,7 @@ const REPO = path.resolve(ROOT, '../../fixtures/vuln-app');
 const { normalize, makeRepo, classify, extractCallee } = require(path.join(ROOT, 'bin/normalize.ts'));
 const { validate } = require(path.join(ROOT, 'bin/validate.ts'));
 const { gate, priority, claimedRank } = require(path.join(ROOT, 'bin/gate.ts'));
-const { guardDiff, sameShape, inScope } = require(path.join(ROOT, 'bin/patch-guard.cjs'));
+const { guardDiff, sameShape, inScope } = require(path.join(ROOT, 'bin/patch-guard.ts'));
 const { stageOf, evaluateVerification, OBLIGATIONS } = require(path.join(ROOT, 'bin/stage.ts'));
 
 let pass = 0, fail = 0;

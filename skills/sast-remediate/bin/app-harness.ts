@@ -1,13 +1,12 @@
 #!/usr/bin/env node
-'use strict';
 // Discover, boot, probe and tear down the target application. Discovery reads the repository
 // and never invents a command. If nothing is found the dynamic witness tier is unavailable,
 // which is a recorded obstacle, not a best-effort fallback.
 
-const fs = require('fs');
-const path = require('path');
-const http = require('http');
-const { spawn } = require('child_process');
+import fs from 'fs';
+import path from 'path';
+import http from 'http';
+import { spawn } from 'child_process';
 
 const exists = (root, rel) => fs.existsSync(path.join(root, rel));
 const readJson = (root, rel) => {
@@ -76,7 +75,9 @@ function discoverAppHarness(root) {
 
 // ------------------------------------------------------------------ boot
 
-function get(baseUrl, p, headers = {}, timeoutMs = 5000) {
+type HttpResult = { status: number; headers: http.IncomingHttpHeaders; body: string; error?: string };
+
+function get(baseUrl, p, headers = {}, timeoutMs = 5000): Promise<HttpResult> {
   return new Promise((resolve) => {
     const u = new URL(p, baseUrl);
     const req = http.request(
@@ -86,7 +87,7 @@ function get(baseUrl, p, headers = {}, timeoutMs = 5000) {
         res.on('data', (c) => { body += c; });
         res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
       });
-    req.on('error', (e) => resolve({ status: 0, headers: {}, body: '', error: e.code }));
+    req.on('error', (e: NodeJS.ErrnoException) => resolve({ status: 0, headers: {}, body: '', error: e.code }));
     req.setTimeout(timeoutMs, () => { req.destroy(); resolve({ status: 0, headers: {}, body: '', error: 'timeout' }); });
     req.end();
   });
@@ -96,7 +97,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // The sandbox lives here. Empty allowlisted environment, loopback only, ephemeral port, no
 // network, hard wall clock. If a control cannot be applied the caller must not run this tier.
-async function boot(harness, cwd, { port, limitsS = 120 } = {}) {
+async function boot(harness, cwd, { port, limitsS = 120 }: { port: number; limitsS?: number }) {
   const env = {
     PATH: process.env.PATH, HOME: path.join(cwd, '.scratch-home'),
     TMPDIR: path.join(cwd, '.scratch-tmp'), PORT: String(port), NODE_ENV: 'test',
@@ -137,9 +138,10 @@ async function boot(harness, cwd, { port, limitsS = 120 } = {}) {
   return { ok: false, why: 'readiness timeout', log, kill: () => {} };
 }
 
-module.exports = { discoverAppHarness, boot, get };
+export { discoverAppHarness, boot, get };
+export type { HttpResult };
 
-if (require.main === module) {
+if (import.meta.main) {
   const root = process.argv[2] || '.';
   const found = discoverAppHarness(path.resolve(root));
   console.log(JSON.stringify(found, null, 2));

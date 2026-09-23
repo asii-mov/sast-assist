@@ -90,7 +90,7 @@ executable  >  structural  >  argued          default
 dynamic                                        opt-in, --witness=dynamic
 ```
 
-**Only `dynamic` and `argued` are implemented.** `runWitnessInner` in `bin/witness-run.cjs`
+**Only `dynamic` and `argued` are implemented.** `runWitnessInner` in `bin/witness-run.ts`
 throws on any other tier. `executable` and `structural` are the designed default path and are
 not written yet, so today the only mechanical proof available is the opt-in `dynamic` tier.
 Until they land, a run either opts into `dynamic` or degrades to `argued`.
@@ -169,7 +169,7 @@ Cheapest first. Short-circuit on the first failure, except the audit, which alwa
 attempt two gets a real explanation.
 
 1. **Empty diff.** Fail as `no_diff`. Zero agent spend.
-2. **Guard.** `bin/patch-guard.cjs`. Milliseconds, no LLM, and no rationale can argue past it.
+2. **Guard.** `bin/patch-guard.ts`. Milliseconds, no LLM, and no rationale can argue past it.
 3. **Witness, red half.** Check out base, apply only the witness file from the patch branch, run
    it. It must signal.
 4. **Witness, green half.** Run on the patch branch. It must fall silent.
@@ -183,7 +183,7 @@ attempt two gets a real explanation.
 8. **Audit.** A fresh agent that neither triaged nor fixed this finding.
 
 For `dynamic`, steps 3 to 5 are the four-step run described in `DYNAMIC-WITNESS.md`, answered by
-`witnessObligations` in `bin/witness-run.cjs` in one call: control on base, attack on base, attack
+`witnessObligations` in `bin/witness-run.ts` in one call: control on base, attack on base, attack
 on head, control on head.
 
 ## What "verified" means
