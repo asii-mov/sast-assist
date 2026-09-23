@@ -2,7 +2,7 @@
 'use strict';
 // Run: node test/pipeline.real.test.cjs
 // The whole pipeline against a real git copy of the fixture app. Real git, the real agent
-// spawn path in bin/agent.cjs (a fake `claude` found on PATH), the real report renderer. Only
+// spawn path in bin/agent.ts (a fake `claude` found on PATH), the real report renderer. Only
 // the scanners are stood in for: the baseline comes from test/fixtures via --scans, and the
 // rescan is answered by a fake semgrep. A case marked expectFail(unit) documents a known
 // defect; it must fail today, and the unit that fixes it turns it into a plain case.
@@ -17,7 +17,7 @@ const ROOT = path.resolve(__dirname, '..');
 const FIXTURE = path.resolve(ROOT, '../../fixtures/vuln-app');
 const SCANS = path.join(ROOT, 'test/fixtures');
 const R = require(path.join(ROOT, 'bin/run.cjs'));
-const { runAgent } = require(path.join(ROOT, 'bin/agent.cjs'));
+const { runAgent } = require(path.join(ROOT, 'bin/agent.ts'));
 const { renderRemediation, renderHandoff } = require(path.join(ROOT, 'bin/report.cjs'));
 
 const PATH_ID = 'f_6ed43412e0d9b09d';
@@ -27,8 +27,8 @@ const TRANSPORT_ID = 'f_e2981bd8a7b838b9';
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'sast-pipeline-'));
 const BIN = path.join(TMP, 'bin');
 fs.mkdirSync(BIN);
-fs.chmodSync(path.join(__dirname, 'fake-claude.cjs'), 0o755);
-fs.symlinkSync(path.join(__dirname, 'fake-claude.cjs'), path.join(BIN, 'claude'));
+fs.chmodSync(path.join(__dirname, 'fake-claude.ts'), 0o755);
+fs.symlinkSync(path.join(__dirname, 'fake-claude.ts'), path.join(BIN, 'claude'));
 // XDG_CONFIG_HOME too: git reads ~/.config/git/ignore even with GIT_CONFIG_GLOBAL unset, and a
 // personal ignore of .claude/ files would hide the stray-file defect.
 Object.assign(process.env, {

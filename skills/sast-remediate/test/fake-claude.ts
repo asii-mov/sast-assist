@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-'use strict';
-// A stand-in for the `claude` CLI, found on PATH by bin/agent.cjs exactly as the real one is.
+// A stand-in for the `claude` CLI, found on PATH by bin/agent.ts exactly as the real one is.
 // It reads its behaviour from the JSON file named by SAST_FAKE_CLAUDE:
 //   { log, triage: { "<file>": <triage> },
 //     fix: [{ act: "patch"|"crash"|"cannot_fix"|"disable", witness, stray, commit }], audit }
@@ -8,9 +7,8 @@
 // fix[n], and the last entry repeats. `audit` defaults to a pass; act `disable` answers a patch
 // that turns the endpoint off instead of enforcing the invariant.
 
-const fs = require('fs');
-const path = require('path');
-const { execFileSync } = require('child_process');
+import fs from 'fs';
+import { execFileSync } from 'child_process';
 
 const argv = process.argv.slice(2);
 const prompt = argv[argv.indexOf('-p') + 1] || '';

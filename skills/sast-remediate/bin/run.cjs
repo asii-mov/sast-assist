@@ -133,7 +133,7 @@ function realExec(cmd, args, o = {}) {
 function realDeps() {
   const lazy = (mod, name) => (...a) => require(mod)[name](...a);
   return {
-    runAgent: lazy('./agent.cjs', 'runAgent'),
+    runAgent: lazy('./agent.ts', 'runAgent'),
     renderRemediation: lazy('./report.cjs', 'renderRemediation'),
     renderHandoff: lazy('./report.cjs', 'renderHandoff'),
     exec: realExec,

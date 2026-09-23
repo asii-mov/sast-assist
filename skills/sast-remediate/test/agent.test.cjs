@@ -11,7 +11,7 @@ const path = require('path');
 const assert = require('assert');
 
 const ROOT = path.resolve(__dirname, '..');
-const { runAgent, realExec, argvFor, extractJson } = require(path.join(ROOT, 'bin/agent.cjs'));
+const { runAgent, realExec, argvFor, extractJson } = require(path.join(ROOT, 'bin/agent.ts'));
 
 const SCHEMA = path.join(ROOT, 'schema/agent-results.schema.json');
 const TRIAGE = '#/$defs/triage';

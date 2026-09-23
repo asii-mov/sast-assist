@@ -59,7 +59,7 @@ The deterministic core is built and tested. `bin/normalize.cjs`, `bin/validate.c
 `bin/witness-run.cjs` all work and are covered by `test/run-all.sh`.
 
 `bin/run.cjs` drives them. One command runs every stage: `run.cjs --target=DIR`. It spawns the
-triage and fix agents through `bin/agent.cjs`, orders fix work with `order()` from `bin/gate.cjs`,
+triage and fix agents through `bin/agent.ts`, orders fix work with `order()` from `bin/gate.cjs`,
 and writes the artifacts with `bin/report.cjs`. Re-running it is the resume path.
 Agents run with the target's Claude settings, `CLAUDE.md` and hooks shut out. Each gets only the
 tools its role needs, and none gets a shell. The harness, not the fixer, commits each fix, and

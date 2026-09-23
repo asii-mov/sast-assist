@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-'use strict';
 // One headless agent call, and the only place this skill talks to a model.
 //
 // An agent's word is not evidence, so nothing here trusts the text it gets back. The result is
@@ -7,10 +6,10 @@
 // as `ok`. A result that fails any of those is DISCARDED whole and re-asked once. Repairing it
 // would make this file a co-author of the answer, and the answer is the thing under test.
 
-const fs = require('fs');
-const path = require('path');
-const { spawn } = require('child_process');
-const { validate } = require(path.join(__dirname, 'validate.cjs'));
+import fs from 'fs';
+import path from 'path';
+import { spawn } from 'child_process';
+import { validate } from './validate.cjs';
 
 const CLI = 'claude';
 const DEFAULT_TIMEOUT_MS = 300000;
@@ -39,7 +38,7 @@ function argvFor({ prompt, model, tools }) {
 
 // The injectable seam. `exec(argv, {cwd, timeoutMs}) -> {code, stdout, stderr, timedOut}`.
 // Tests pass their own; nothing else in the skill spawns a model.
-function realExec(argv, { cwd, timeoutMs, command = CLI } = {}) {
+function realExec(argv: string[], { cwd, timeoutMs, command = CLI }: { cwd?: string; timeoutMs?: number; command?: string } = {}) {
   return new Promise((resolve) => {
     // detached gives the child its own process group. The CLI spawns tool subprocesses of its
     // own, and killing the parent alone leaves those holding the run open past its budget.
@@ -169,13 +168,13 @@ async function runAgent(opts) {
   return { ok: false, reason: `discarded twice: ${first.reason} | ${second.reason}`, raw: second.raw };
 }
 
-module.exports = { runAgent, realExec, argvFor, resultText, extractJson, DEFAULT_TIMEOUT_MS };
+export { runAgent, realExec, argvFor, resultText, extractJson, DEFAULT_TIMEOUT_MS };
 
-if (require.main === module) {
+if (import.meta.main) {
   const [schemaPath, pointer, ...rest] = process.argv.slice(2);
   const prompt = rest.join(' ');
   if (!schemaPath || !pointer || !prompt) {
-    console.error('usage: agent.cjs <schema.json> <#/$defs/name> <prompt>');
+    console.error('usage: agent.ts <schema.json> <#/$defs/name> <prompt>');
     process.exit(2);
   }
   runAgent({ prompt, schemaPath, schemaPointer: pointer, tools: ['Read', 'Grep', 'Glob'] }).then((r) => {
