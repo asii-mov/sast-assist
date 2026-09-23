@@ -45,9 +45,9 @@ function convert(file: string, text: string): { text: string; leftovers: string[
       l = `import ${m[1]} from '${m[2]}';`;
     } else if ((m = /^const (\{[^}]+\}) = require\('([^./][^']*)'\);$/.exec(l))) {
       l = `import ${m[1]} from '${m[2]}';`;
-    } else if ((m = /^const (\{[^}]+\}|\w+) = require\('(\.[^']+\.cjs)'\);$/.exec(l))) {
+    } else if ((m = /^const (\{[^}]+\}|\w+) = require\('(\.[^']+\.(?:cjs|ts))'\);$/.exec(l))) {
       l = importLine(m[1], spec(file, path.resolve(path.dirname(file), m[2])));
-    } else if ((m = /^const (\{[^}]+\}|\w+) = require\(path\.join\(ROOT, '([^']+\.cjs)'\)\);$/.exec(l))) {
+    } else if ((m = /^const (\{[^}]+\}|\w+) = require\(path\.join\(ROOT, '([^']+\.(?:cjs|ts))'\)\);$/.exec(l))) {
       l = importLine(m[1], spec(file, path.join(SKILL, m[2])));
     }
     l = l.replace(/^if \(require\.main === module\)/, 'if (import.meta.main)');
