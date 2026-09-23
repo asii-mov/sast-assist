@@ -12,7 +12,7 @@ and verifies the fix still works.
 
 Three things make the shape non-obvious, all established in Phase A.
 
-**The prior art is inverted.** The reference `security-audit-skill` is the reference for
+**The prior art is inverted.** A published security-audit skill is the usual reference for
 agentic security work, but its six phases exist to answer *"did we look everywhere?"*, LLM
 hunters generate findings, and the coverage ledger and critic waves prove coverage. The
 scanners already answer that deterministically. Our expensive question is *"which of these

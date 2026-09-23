@@ -240,9 +240,8 @@ described as a principle carried over in spirit; with the dynamic tier it is loa
 
 The lost artifacts were recreated where recreation is meaningful:
 
-- `reference/security-audit-skill/`, the prior art, re-cloned **into the project**
-  rather than a scratchpad, `.git` stripped, 22 files. This is also the implementation
-  reference for the schemas and validators.
+- The prior art was re-cloned into the project for reading during design, and later removed.
+  Nothing in the skill is copied from it; the schemas and validators were written from scratch.
 - `design/arena/RUBRIC.md`, restored verbatim from context; text unchanged from the original.
 - `design/arena/CANDIDATES.md`, reconstructed summaries, explicitly labeled as such.
 

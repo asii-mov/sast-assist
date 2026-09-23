@@ -2,7 +2,7 @@
 
 ## Learned User Preferences
 
-- `reference/security-audit-skill/` is vendored prior art, included only so the model can see the target shape. It is never the deliverable and is not to be copied; the skill we ship is `skills/sast-remediate/`.
+- The skill we ship, `skills/sast-remediate/`, must be original work. It may take ideas from published security skills, but never copies their code or text, and no third-party skill is kept in the repo.
 - Answer in plain, non-technical language. Technical explanations are repeatedly met with "in layman terms". Lead with the layman version instead of waiting to be asked for it.
 - The intended deliverable is a single command that runs Semgrep/CodeQL, uses AI to drop false positives, then patches the real findings. The verification gate was explicitly dropped ("ignore the verifier, we can verify the code"); do not reintroduce it as a precondition on patching.
 - On 2026-09-22 the user asked for multi-item fix work to be split: opus (Opus 5.5) writes one technical plan per item (kept under `docs/plans/`, e.g. `R1-resume.md` to `R5-verify-full.md`), then sonnet subagents execute them. Asked once so far; offer the same split for similar batches.

@@ -9,8 +9,8 @@ not a substitute for the originals.
 **The originals cannot be regenerated.** Re-running four independent model runs would produce
 four *different* designs, not these. Since the base was already picked, the grafts already
 folded in, and the synthesis verified, re-running would restart the arena rather than restore
-it. The one thing genuinely worth recovering — the prior art — has been re-cloned to
-`reference/security-audit-skill/`.
+it. The one thing genuinely worth recovering, the prior art, was re-read during design and
+has since been removed from the project.
 
 ---
 

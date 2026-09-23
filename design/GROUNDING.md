@@ -12,7 +12,7 @@ skill the user pointed at.
 
 ## Constraint 1: The reference security-audit skill is the prior art, but inverted
 
-Read in full at `reference/security-audit-skill/` (22 files, ~5.4k lines).
+Read in full during design (22 files, ~5.4k lines).
 Six phases run in order. Reconnaissance, then coverage-led hunting, then candidate
 validation, then structured output, then independent record verification, then
 target-neutral reporting.
