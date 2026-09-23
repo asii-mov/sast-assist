@@ -28,11 +28,13 @@ function convert(file: string, text: string): { text: string; leftovers: string[
   const out: string[] = [];
   const leftovers: string[] = [];
   let inTemplate = false;
+  const templateLines = new Set<number>();
   const lines = text.replace(/^'use strict';\n/m, '').split('\n');
   for (const [i, line] of lines.entries()) {
     const wasInTemplate = inTemplate;
     inTemplate = endsInTemplate(line, inTemplate);
     if (wasInTemplate) {
+      templateLines.add(i);
       if (/\brequire\b|\bmodule\.exports\b|__dirname/.test(line)) {
         console.log(`skipped as template text ${path.relative(REPO, file)}:${i + 1}: ${line.trim()}`);
       }
@@ -58,16 +60,19 @@ function convert(file: string, text: string): { text: string; leftovers: string[
     }
     out.push(l);
   }
-  hoistNested(out);
   let result = out.join('\n');
-  result = result.replace(/^module\.exports = \{([\s\S]*?)\};$/m, (whole, body: string) => {
+  result = result.replace(/^module\.exports = \{([\s\S]*?)\};$/gm, (whole, body: string, offset: number) => {
+    if (templateLines.has(result.slice(0, offset).split('\n').length - 1)) return whole;
     if (/:/.test(body.replace(/\/\/.*$/gm, ''))) {
       leftovers.push(`${path.relative(REPO, file)}: module.exports has non-shorthand keys`);
       return whole;
     }
     return `export {${body}};`;
   });
-  return { text: result, leftovers };
+  // The export rewrite keeps the line count, so the template line numbers still hold here.
+  const hoisted = result.split('\n');
+  hoistNested(hoisted, templateLines);
+  return { text: hoisted.join('\n'), leftovers };
 }
 
 // Whether a template literal is still open at the end of `line`. Quotes, comments and regex
@@ -105,15 +110,21 @@ function endsInTemplate(line: string, open: boolean): boolean {
 }
 
 // A builtin required inside a block (usually the CLI entry) becomes a top-level import.
-function hoistNested(lines: string[]): void {
+// Imports that landed below the top of the file move up with it, since ESM hoists them anyway.
+function hoistNested(lines: string[], templateLines: Set<number>): void {
   const hoisted: string[] = [];
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const m = /^\s+const (\w+|\{[^}]+\}) = require\('([^./][^']*)'\);$/.exec(lines[i]);
-    if (!m) continue;
-    const line = `import ${m[1]} from '${m[2]}';`;
-    if (!lines.includes(line) && !hoisted.includes(line)) hoisted.unshift(line);
-    lines.splice(i, 1);
-  }
+  let seenCode = false;
+  const drop = new Set<number>();
+  lines.forEach((l, i) => {
+    if (templateLines.has(i)) { seenCode = true; return; }
+    const m = /^\s+const (\w+|\{[^}]+\}) = require\('([^./][^']*)'\);$/.exec(l);
+    const line = m ? `import ${m[1]} from '${m[2]}';` : (seenCode && /^import /.test(l) ? l : null);
+    if (!/^(#!|\/\/|import |\s*$)/.test(l)) seenCode = true;
+    if (!line) return;
+    drop.add(i);
+    if (!lines.some((x, j) => x === line && !drop.has(j) && j !== i) && !hoisted.includes(line)) hoisted.push(line);
+  });
+  for (const i of [...drop].sort((a, b) => b - a)) lines.splice(i, 1);
   if (!hoisted.length) return;
   let at = 0;
   while (at < lines.length && /^(#!|\/\/)/.test(lines[at])) at++;
