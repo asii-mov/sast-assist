@@ -12,22 +12,32 @@ import * as R from '../bin/run.ts';
 import * as S from '../bin/scan.ts';
 import { normalize, makeRepo } from '../bin/normalize.ts';
 import { validate } from '../bin/validate.ts';
+import type { AgentOpts, AgentResult } from '../bin/agent.ts';
+import type { Disposition, FindingRecord } from '../bin/stage.ts';
+import type { SecurityContract, Triage, Witness } from '../schema/types.ts';
+import type { Obligation } from '../bin/stage.ts';
 import { VERIFY_LEVELS, stageOf } from '../bin/stage.ts';
 import { renderRemediation, renderHandoff } from '../bin/report.ts';
+
+// A lookup the test depends on. Missing, it fails with what was missing instead of a TypeError.
+function must<T>(v: T | null | undefined, what: string): T {
+  assert.ok(v !== null && v !== undefined, `missing ${what}`);
+  return v;
+}
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const REPO = path.resolve(ROOT, '../../fixtures/vuln-app');
 const SCHEMA_DIR = path.join(ROOT, 'schema');
 
 
-const readJson = (f) => JSON.parse(fs.readFileSync(f, 'utf8'));
+const readJson = (f: string) => JSON.parse(fs.readFileSync(f, 'utf8'));
 
 let pass = 0, fail = 0;
-const tests = [];
-const t = (name, fn) => tests.push([name, fn]);
-const section = (s) => tests.push([s, null]);
+const tests: [string, (() => unknown) | null][] = [];
+const t = (name: string, fn: () => unknown) => tests.push([name, fn]);
+const section = (s: string) => tests.push([s, null]);
 
-const tmpDirs = [];
+const tmpDirs: string[] = [];
 function tmp() {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'sast-run-'));
   tmpDirs.push(d);
@@ -43,12 +53,13 @@ const raw = {
   semgrep: readJson(path.join(ROOT, 'test/fixtures/semgrep.json')),
   codeql: readJson(path.join(ROOT, 'test/fixtures/codeql.sarif')),
 };
-const fixtures = () => normalize(raw, makeRepo(REPO), 'run-test').findings;
-const pathFinding = () => fixtures().find((f) => f.invariant_class === 'injection.path');
+// selftest checks these normalized fixtures against the schema, so they are FindingRecords.
+const fixtures = () => normalize(raw, makeRepo(REPO), 'run-test').findings as FindingRecord[];
+const pathFinding = () => must(fixtures().find((f) => f.invariant_class === 'injection.path'), 'the path finding');
 
 const RULE_ID = 'js/path-injection';
 
-const contract = (over: Record<string, any> = {}) => ({
+const contract = (over: Record<string, any> = {}): SecurityContract => ({
   invariant: 'every string reaching the first argument of the file read in `read` resolves inside '
     + 'the public directory, and a request may only select a name already present there',
   violating_input: '../../secret.txt',
@@ -62,14 +73,14 @@ const contract = (over: Record<string, any> = {}) => ({
   ...over,
 });
 
-const exploitable = (over: Record<string, any> = {}) => ({
+const exploitable = (over: Record<string, any> = {}): Extract<Triage, { verdict: 'exploitable' }> => ({
   verdict: 'exploitable', established_by: 'agent', contract: contract(over.contract || {}),
   severity: over.severity || 'high',
   impact: 'any file readable by the process is returned to an unauthenticated caller',
   likelihood: 'a single crafted request',
   blast_radius: 'every file under the process user',
 });
-const notExploitable = () => ({
+const notExploitable = (): Triage => ({
   verdict: 'not_exploitable', established_by: 'agent',
   refutation: { reason: 'input_is_not_attacker_controlled', control: null, explanation: 'the value is a literal' },
 });
@@ -102,13 +113,13 @@ const DIFF_TEST = `diff --git a/test/files.test.js b/test/files.test.js
 
 function makeDeps(o: Record<string, any> = {}) {
   const state = {
-    agentCalls: [], execCalls: [], diff: o.diff === undefined ? DIFF_SRC : o.diff,
+    agentCalls: [] as AgentOpts[], execCalls: [] as string[], diff: o.diff === undefined ? DIFF_SRC : o.diff,
     npm: o.npm || (() => 0), rescan: o.rescan || { results: [], errors: [] },
     reports: {} as { remediation?: { f: unknown; m: Record<string, unknown> }; handoff?: { f: unknown; m: Record<string, unknown> } },
   };
   const okr = (stdout = '') => ({ status: 0, stdout, stderr: '' });
 
-  const exec = (cmd, args, opt: { cwd?: string } = {}) => {
+  const exec = (cmd: string, args: string[], opt: { cwd?: string } = {}) => {
     state.execCalls.push([cmd, ...args].join(' '));
     if (cmd === 'git') {
       const rest = args[0] === '-C' ? args.slice(2) : args;
@@ -116,7 +127,7 @@ function makeDeps(o: Record<string, any> = {}) {
         return o.base === null ? { status: 1, stdout: '', stderr: 'not a git repository' } : okr('a'.repeat(40) + '\n');
       }
       if (rest[0] === 'worktree' && rest[1] === 'add') {
-        const dir = rest.find((a) => path.isAbsolute(a));
+        const dir = must(rest.find((a) => path.isAbsolute(a)), 'the worktree path');
         fs.mkdirSync(dir, { recursive: true });
         return okr();
       }
@@ -135,14 +146,14 @@ function makeDeps(o: Record<string, any> = {}) {
     return okr();
   };
 
-  const deps = {
+  const deps: R.Deps & { state: typeof state } = {
     exec,
     onPath: o.onPath || (() => true),
     log: () => {},
     now: () => '2026-01-01T00:00:00.000Z',
     renderRemediation: (f, m) => { state.reports.remediation = { f, m }; return '# remediation\n'; },
     renderHandoff: (f, m) => { state.reports.handoff = { f, m }; return '# handoff\n'; },
-    runAgent: async (opts) => {
+    runAgent: async (opts): Promise<AgentResult> => {
       state.agentCalls.push(opts);
       const h = (o.agents || {})[opts.schemaPointer];
       if (!h) return { ok: false, reason: 'no handler', raw: '' };
@@ -152,6 +163,26 @@ function makeDeps(o: Record<string, any> = {}) {
     state,
   };
   return deps;
+}
+
+// The finding's outcome, asserted to be one of `states`, with that state's fields.
+function settled<S extends Disposition['state']>(f: FindingRecord, ...states: S[]) {
+  const d = f.disposition;
+  assert.ok(d && (states as string[]).includes(d.state), `expected ${states.join('|')}, got ${d?.state}`);
+  return d as Extract<Disposition, { state: S }>;
+}
+
+// The traced flow's steps, asserting the flow is traced.
+function stepsOf(f: FindingRecord) {
+  assert.ok(f.flow.kind === 'traced', 'expected a traced flow');
+  return f.flow.steps;
+}
+
+// A full run, never a dry one, so the result carries findings and meta.
+async function runFull(opts: R.Opts, deps: R.Deps) {
+  const res = await R.run(opts, deps);
+  assert.ok(!res.dryRun, 'expected a full run');
+  return res;
 }
 
 const baseOpts = (over: Record<string, any> = {}) => R.parseArgs([
@@ -258,21 +289,21 @@ t('the prompt still carries the contract, so an empty prompt cannot pass the tes
   assert.ok(prompt.includes(c.enforcement_point.rationale), 'the enforcement point must reach the fixer');
   assert.ok(prompt.includes(c.writable_scope[0]), 'the writable scope must reach the fixer');
   assert.ok(prompt.includes(c.forbidden_resolutions[0]), 'the forbidden resolutions must reach the fixer');
-  assert.ok(prompt.includes(f.flow.steps[0].code), 'the materialized flow source must reach the fixer');
+  assert.ok(prompt.includes(stepsOf(f)[0].code), 'the materialized flow source must reach the fixer');
   assert.ok(prompt.includes(f.context.enclosing_excerpt.split('\n')[0]), 'the excerpt must reach the fixer');
 });
 
 t('the scanner-authored per-step note is dropped while the source line is kept', () => {
   const f = pathFinding();
   f.triage = exploitable();
-  const notes = f.flow.steps.map((s) => s.note).filter((n) => n && n.includes(' ... '));
+  const notes = stepsOf(f).map((s) => s.note).filter((n): n is string => !!n && n.includes(' ... '));
   assert.ok(notes.length, 'fixture must carry an elided scanner note');
   const prompt = R.buildFixPrompt(f, {}, []);
   for (const n of notes) assert.ok(!prompt.includes(n), `leaked a scanner-authored note: ${n}`);
 });
 
 t('the structural witness rule is withheld, because handing a fixer a matcher is the whole defect', () => {
-  const w = {
+  const w: Witness = {
     tier: 'structural', rule_yaml: 'rules:\n  - id: x\n    pattern: path.join($A, $B)\n',
     anchor: { file: 'src/routes/files.js', symbol: 'read', sink_digest: 'f'.repeat(64), line_at_scan: 9 },
     expected_pre_fix: 'match', expected_post_fix: 'no_match',
@@ -333,11 +364,11 @@ t('repository source that looks like a rule id or names a scanner still reaches 
 t("this finding's own rule id and message are refused even inside the source excerpt", () => {
   const f = pathFinding();
   f.triage = exploitable();
-  const msg = f.sites.flatMap((s) => s.observations).find((o) => o.rule_id === RULE_ID).message.trim();
+  const msg = f.sites.flatMap((s) => s.observations).find((o) => o.rule_id === RULE_ID)?.message.trim() ?? '';
   f.context.enclosing_excerpt = `// ${RULE_ID}`;
   assert.strictEqual(R.leakError(R.buildFixPrompt(f, {}, []), f), `fixer prompt leaked scanner material: "${RULE_ID}"`);
   f.context.enclosing_excerpt = `// ${msg}`;
-  assert.match(R.leakError(R.buildFixPrompt(f, {}, []), f), /^fixer prompt leaked scanner material: /);
+  assert.match(R.leakError(R.buildFixPrompt(f, {}, []), f) ?? '', /^fixer prompt leaked scanner material: /);
 });
 
 t('a path given as the violating value is not a rule id', () => {
@@ -351,7 +382,7 @@ t('a path given as the violating value is not a rule id', () => {
 t("the auditor sees the fixer's own words about the vulnerability class", () => {
   const f = pathFinding();
   f.triage = exploitable();
-  const name = f.sites.flatMap((s) => s.observations).find((o) => o.rule_name && !o.rule_name.startsWith('http')).rule_name;
+  const name = f.sites.flatMap((s) => s.observations).find((o) => o.rule_name && !o.rule_name.startsWith('http'))?.rule_name ?? '';
   const p = R.buildAuditPrompt(f, { enforcement_note: `closes the ${name} by resolving against the public root` }, DIFF_SRC);
   assert.strictEqual(R.leakError(p, f), null);
 });
@@ -365,8 +396,8 @@ t('the triage prompt DOES carry the scanner claim, so the asymmetry is deliberat
 });
 
 t('the triage prompt switches on flow.kind', () => {
-  const sinkOnly = fixtures().find((f) => f.flow.kind === 'sink_only');
-  const p = R.buildTriagePrompt(sinkOnly, { witnessTiers: [] });
+  const sinkOnly = must(fixtures().find((f) => f.flow.kind === 'sink_only'), 'a sink_only finding');
+  const p = R.buildTriagePrompt(sinkOnly, { witnessTiers: [], testCommand: null });
   assert.ok(p.includes('No dataflow path was provided'));
   assert.ok(!p.includes('claimed route from source to sink'), 'the traced instruction must not be sent');
 });
@@ -390,8 +421,8 @@ t('a finding whose every site is test or vendor code gets a real triage, not a s
   f.sites[0].locus.file = 'test/routes/files.test.js';
   const n = R.preResolve([f]);
   assert.strictEqual(n, 1);
-  assert.strictEqual(f.triage.established_by, 'deterministic_prepass');
-  assert.strictEqual(f.triage.verdict, 'not_exploitable');
+  assert.strictEqual(f.triage?.established_by, 'deterministic_prepass');
+  assert.ok(f.triage?.verdict === 'not_exploitable', 'expected a not_exploitable triage');
   assert.strictEqual(f.triage.refutation.reason, 'test_or_fixture_or_generated_code');
   const errs = validate({ $ref: 'finding.schema.json#/$defs/triage' }, f.triage, SCHEMA_DIR);
   assert.deepStrictEqual(errs, [], errs.join('\n'));
@@ -429,7 +460,7 @@ async function triageOnlyRun(over: Record<string, any> = {}) {
   const opts = baseOpts(); opts.out = out; opts.triageOnly = true;
   Object.assign(opts, over.opts || {});
   const deps = makeDeps({ agents: { '#/$defs/triage': over.triage || (() => ({ ok: true, data: notExploitable() })) } });
-  const res = await R.run(opts, deps);
+  const res = await runFull(opts, deps);
   return { res, deps, out };
 }
 
@@ -470,21 +501,21 @@ t('the dynamic tier is offered to triage only when asked for and a harness exist
 
 t('the reporter is handed the meta the report spec requires', async () => {
   const { deps } = await triageOnlyRun();
-  const m = deps.state.reports.remediation.m;
+  const m = must(deps.state.reports.remediation, 'the remediation render').m;
   for (const k of ['run_id', 'target', 'base_commit', 'policy', 'verify_level', 'run_status',
     'incomplete_reason', 'dropped', 'scanners']) {
     assert.ok(k in m, `meta is missing ${k}`);
   }
-  assert.strictEqual(deps.state.reports.handoff.m.run_id, m.run_id);
+  assert.strictEqual(must(deps.state.reports.handoff, 'the handoff render').m.run_id, m.run_id);
 });
 
 t('the gate runs on every triaged finding and its decision is persisted', async () => {
   const { res } = await triageOnlyRun();
   for (const f of res.findings) {
     assert.ok(f.gate, `${f.id} was never gated`);
-    assert.strictEqual(f.gate.action, 'report_only');
-    assert.strictEqual(f.gate.reason, 'not_exploitable');
-    assert.strictEqual(f.disposition.state, 'rejected');
+    assert.strictEqual(f.gate?.action, 'report_only');
+    assert.strictEqual(f.gate?.reason, 'not_exploitable');
+    assert.strictEqual(f.disposition?.state, 'rejected');
   }
 });
 
@@ -494,17 +525,17 @@ t('a below-threshold exploitable finding is reported, not fixed', async () => {
     opts: { fixAt: 'high' },
   });
   for (const f of res.findings) {
-    assert.strictEqual(f.gate.action, 'report_only');
-    assert.strictEqual(f.gate.reason, 'below_threshold');
-    assert.strictEqual(f.disposition.state, 'below_threshold');
-    assert.strictEqual(f.disposition.severity, 'low');
+    assert.strictEqual(f.gate?.action, 'report_only');
+    assert.strictEqual(f.gate?.reason, 'below_threshold');
+    assert.strictEqual(f.disposition?.state, 'below_threshold');
+    assert.strictEqual(settled(f, 'below_threshold').severity, 'low');
   }
 });
 
 t('--triage-only leaves fixable findings unpatched and says so as incomplete', async () => {
   const { res } = await triageOnlyRun({ triage: () => ({ ok: true, data: exploitable() }) });
   assert.strictEqual(res.meta.run_status, 'incomplete');
-  assert.ok(/triage_only/.test(res.meta.incomplete_reason), res.meta.incomplete_reason);
+  assert.ok(/triage_only/.test(res.meta.incomplete_reason ?? ''), String(res.meta.incomplete_reason));
   assert.ok(res.findings.every((f) => f.patches.length === 0));
 });
 
@@ -519,16 +550,16 @@ t('a failed triage call leaves the finding open for the next run', async () => {
   assert.strictEqual(res.meta.counts.agent_failures, 3);
   assert.strictEqual(res.meta.counts.triaged, 0);
   assert.ok(res.meta.agent_failures.every((x) => x.stage === 'triage' && x.reason === 'unparseable'));
-  assert.ok(/agent_failed: 3 agent call\(s\) failed and will be retried on the next run/.test(res.meta.incomplete_reason),
-    res.meta.incomplete_reason);
+  assert.ok(/agent_failed: 3 agent call\(s\) failed and will be retried on the next run/.test(res.meta.incomplete_reason ?? ''),
+    String(res.meta.incomplete_reason));
 });
 
 t('a split is escalated rather than triaged under a contract that fits neither half', async () => {
   const { res } = await triageOnlyRun({
     triage: () => ({ ok: true, data: { split: [{ site_lines: [9], why: 'a' }, { site_lines: [10], why: 'b' }] } }),
   });
-  assert.strictEqual(res.findings[0].disposition.state, 'deferred');
-  assert.strictEqual(res.findings[0].disposition.reason, 'split_requested');
+  assert.strictEqual(res.findings[0].disposition?.state, 'deferred');
+  assert.strictEqual(settled(res.findings[0], 'deferred').reason, 'split_requested');
 });
 
 t('re-running the same command is the resume path and spends nothing twice', async () => {
@@ -536,10 +567,10 @@ t('re-running the same command is the resume path and spends nothing twice', asy
   const opts = baseOpts(); opts.out = out; opts.triageOnly = true;
   const mk = () => makeDeps({ agents: { '#/$defs/triage': () => ({ ok: true, data: notExploitable() }) } });
   const first = mk();
-  await R.run(opts, first);
+  await runFull(opts, first);
   assert.strictEqual(first.state.agentCalls.length, 3);
   const second = mk();
-  const res2 = await R.run(opts, second);
+  const res2 = await runFull(opts, second);
   assert.strictEqual(second.state.agentCalls.length, 0, 'a resumed run must re-triage nothing');
   assert.strictEqual(res2.meta.counts.resumed, 3);
   assert.ok(res2.findings.every((f) => stageOf(f, res2.meta.verify_level) === 'done'));
@@ -549,11 +580,11 @@ t('--max-findings bounds the run and the rest are deferred on disk, never droppe
   const out = path.join(tmp(), 'run-1');
   const opts = baseOpts(); opts.out = out; opts.maxFindings = 1;
   const deps = makeDeps({ agents: { '#/$defs/triage': () => ({ ok: true, data: notExploitable() }) } });
-  const res = await R.run(opts, deps);
+  const res = await runFull(opts, deps);
   assert.strictEqual(deps.state.agentCalls.length, 1, 'the budget must bound agent spend');
   assert.strictEqual(res.meta.counts.deferred, 2);
   assert.strictEqual(res.meta.run_status, 'incomplete');
-  assert.ok(/max_findings=1/.test(res.meta.incomplete_reason), res.meta.incomplete_reason);
+  assert.ok(/max_findings=1/.test(res.meta.incomplete_reason ?? ''), String(res.meta.incomplete_reason));
   const untriaged = res.findings.filter((f) => !f.triage);
   assert.strictEqual(untriaged.length, 2);
   for (const f of untriaged) {
@@ -567,10 +598,10 @@ t('a deferred finding is picked up by the next run', async () => {
   const out = path.join(tmp(), 'run-1');
   const one = baseOpts(); one.out = out; one.maxFindings = 1;
   const agents = { '#/$defs/triage': () => ({ ok: true, data: notExploitable() }) };
-  await R.run(one, makeDeps({ agents }));
+  await runFull(one, makeDeps({ agents }));
   const two = baseOpts(); two.out = out;
   const d2 = makeDeps({ agents });
-  const res = await R.run(two, d2);
+  const res = await runFull(two, d2);
   assert.strictEqual(d2.state.agentCalls.length, 2, 'the next run picks up exactly what was deferred');
   assert.strictEqual(res.meta.run_status, 'complete');
   assert.ok(res.findings.every((f) => f.disposition));
@@ -586,8 +617,8 @@ t('a scanner that is absent is recorded and the run continues on what is left', 
   fs.copyFileSync(path.join(ROOT, 'test/fixtures/semgrep.json'), path.join(dir, 'semgrep.json'));
   const opts = baseOpts(); opts.out = path.join(tmp(), 'run-1'); opts.scans = dir; opts.triageOnly = true;
   const deps = makeDeps({ agents: { '#/$defs/triage': () => ({ ok: true, data: notExploitable() }) } });
-  const res = await R.run(opts, deps);
-  const ql = res.meta.scanners.find((s) => s.name === 'codeql');
+  const res = await runFull(opts, deps);
+  const ql = must(res.meta.scanners.find((s) => s.name === 'codeql'), 'ql');
   assert.strictEqual(ql.status, 'absent');
   assert.ok(res.findings.length > 0);
 });
@@ -607,7 +638,7 @@ section('fix and verify');
 const PATCHED = { ok: true, data: { outcome: 'patched', declared_files: ['src/routes/files.js'],
   enforcement_note: 'the name is now an index into a fixed list' } };
 
-const semgrepCalls = (deps) => deps.state.execCalls.filter((c) => c.startsWith('semgrep '));
+const semgrepCalls = (deps: { state: { execCalls: string[] } }) => deps.state.execCalls.filter((c) => c.startsWith('semgrep '));
 
 async function fixRun(over: Record<string, any> = {}) {
   const out = over.out || path.join(tmp(), 'run-1');
@@ -616,7 +647,7 @@ async function fixRun(over: Record<string, any> = {}) {
   if (over.scans) opts.scans = over.scans;
   const witness = over.witness || {};
   const agents = {
-    '#/$defs/triage': (o) => ({ ok: true, data: exploitable({ contract: witness }) }),
+    '#/$defs/triage': () => ({ ok: true, data: exploitable({ contract: witness }) }),
     '#/$defs/fix': over.fix || (() => PATCHED),
     '#/$defs/audit': over.audit || (() => ({
       ok: true,
@@ -638,7 +669,7 @@ async function fixRun(over: Record<string, any> = {}) {
     fs.mkdirSync(out, { recursive: true });
     fs.writeFileSync(path.join(out, 'run-metadata.json'), JSON.stringify(over.recordedMeta));
   }
-  const res = await R.run(opts, deps);
+  const res = await runFull(opts, deps);
   return { res, deps, out };
 }
 
@@ -647,13 +678,13 @@ t('the baseline scan runs the configured semgrep rules and CodeQL suite', async 
     '--semgrep-config=p/trailofbits', '--codeql-suite=security-and-quality', '--triage-only']);
   const deps = makeDeps({ rescan: { results: [pathHit(null, 9)], errors: [] },
     agents: { '#/$defs/triage': () => ({ ok: true, data: notExploitable() }) } });
-  const res = await R.run(opts, deps);
+  const res = await runFull(opts, deps);
   const calls = semgrepCalls(deps);
   assert.strictEqual(calls.length, 1);
   assert.ok(calls[0].startsWith('semgrep scan --config p/trailofbits --json-output='), calls[0]);
   assert.ok(deps.state.execCalls.some(
     (c) => c.includes('codeql/javascript-queries:codeql-suites/javascript-security-and-quality.qls')));
-  const semgrepMeta = res.meta.scanners.find((s) => s.name === 'semgrep');
+  const semgrepMeta = must(res.meta.scanners.find((s) => s.name === 'semgrep'), 'semgrepMeta');
   assert.strictEqual(semgrepMeta.status, 'ok');
   assert.strictEqual(semgrepMeta.config, 'p/trailofbits');
 });
@@ -666,8 +697,8 @@ t("the rescan runs the run's semgrep rules, not p/default", async () => {
     assert.ok(c.includes('--config p/trailofbits'), c);
     assert.ok(!c.includes('p/default'), c);
   }
-  const f = res.findings.find((x) => x.id === PATH_ID);
-  assert.strictEqual(f.patches[0].verification.rescan.scanners[0].config, 'p/trailofbits');
+  const f = must(res.findings.find((x) => x.id === PATH_ID), PATH_ID);
+  assert.strictEqual(f.patches[0].verification?.rescan?.scanners[0].config, 'p/trailofbits');
 });
 
 t('a fresh run records its scanner config before any fixer runs', async () => {
@@ -711,12 +742,12 @@ t('a malformed recorded scan_config is ignored, not trusted', async () => {
 t("a rescan that reports absolute worktree paths matches the baseline's relative ones", async () => {
   const { res } = await fixRun({
     fix: movingFix,
-    rescan: (target) => ({ results: [{ ...pathHit(null, 11), path: path.join(target, 'src/routes/files.js') }], errors: [] }),
+    rescan: (target: string) => ({ results: [{ ...pathHit(null, 11), path: path.join(target, 'src/routes/files.js') }], errors: [] }),
   });
-  const v = res.findings.find((x) => x.id === PATH_ID).patches[0].verification;
+  const v = must(must(res.findings.find((x) => x.id === PATH_ID), PATH_ID).patches[0].verification, 'verification');
   assert.deepStrictEqual(v.no_new_findings, { status: 'pass' });
-  assert.deepStrictEqual(v.rescan.new_findings, []);
-  assert.strictEqual(v.rescan.original_absent, false);
+  assert.deepStrictEqual(v.rescan?.new_findings, []);
+  assert.strictEqual(v.rescan?.original_absent, false);
 });
 
 t('the report names the rescan configuration and warns that a reused scan must match it', async () => {
@@ -739,20 +770,21 @@ t('the fixer prompt sent by the live pipeline carries no rule id', async () => {
 
 t('the fixer works in a worktree outside the run directory, from which no relative path reaches findings', async () => {
   const { res, deps, out } = await fixRun();
-  const c = deps.state.agentCalls.find((x) => x.schemaPointer === '#/$defs/fix');
-  const f = res.findings.find((x) => x.patches.length);
-  assert.strictEqual(path.basename(c.cwd), `${f.id}-1`);
-  assert.strictEqual(path.dirname(path.dirname(c.cwd)), path.join(CACHE, 'sast-remediate', 'worktrees'));
-  assert.ok(path.relative(out, c.cwd).startsWith('..'), `${c.cwd} is inside ${out}`);
+  const c = must(deps.state.agentCalls.find((x) => x.schemaPointer === '#/$defs/fix'), 'the fixer call');
+  const f = must(res.findings.find((x) => x.patches.length), 'f');
+  const cwd = must(c.cwd, 'the fixer cwd');
+  assert.strictEqual(path.basename(cwd), `${f.id}-1`);
+  assert.strictEqual(path.dirname(path.dirname(cwd)), path.join(CACHE, 'sast-remediate', 'worktrees'));
+  assert.ok(path.relative(out, cwd).startsWith('..'), `${cwd} is inside ${out}`);
   for (let k = 1; k <= 4; k++) {
-    assert.ok(!fs.existsSync(path.resolve(c.cwd, '../'.repeat(k), 'findings')), `findings reachable at depth ${k}`);
+    assert.ok(!fs.existsSync(path.resolve(cwd, '../'.repeat(k), 'findings')), `findings reachable at depth ${k}`);
   }
   assert.ok(fs.existsSync(path.join(out, 'findings', `${f.id}.json`)), 'the findings the fixer must not reach do exist');
 });
 
 t('each agent role gets exactly its tools, and none gets a shell', async () => {
   const { deps } = await fixRun({ verify: 'full' });
-  const byRole = {};
+  const byRole: Record<string, string[]> = {};
   for (const c of deps.state.agentCalls) byRole[c.schemaPointer] = c.tools;
   assert.deepStrictEqual(byRole, {
     '#/$defs/triage': ['Read', 'Grep', 'Glob'],
@@ -783,33 +815,33 @@ t('one worktree and one branch per finding, off the base commit', async () => {
 
 t('a commit the harness cannot make ends fix_failed, with no retry', async () => {
   const { res, deps } = await fixRun({ commitFails: true });
-  const f = res.findings.find((x) => x.id === 'f_6ed43412e0d9b09d');
+  const f = must(res.findings.find((x) => x.id === 'f_6ed43412e0d9b09d'), 'f');
   assert.deepStrictEqual(f.patches.map((p) => [p.outcome, p.detail]), [['error', 'commit_failed: Author identity unknown']]);
-  assert.strictEqual(f.disposition.state, 'fix_failed');
-  assert.strictEqual(f.disposition.branch, null);
+  assert.strictEqual(f.disposition?.state, 'fix_failed');
+  assert.strictEqual(settled(f, 'fix_failed').branch, null);
   assert.strictEqual(deps.state.agentCalls.filter((c) => c.schemaPointer === '#/$defs/fix').length, 3);
 });
 
 t('at cheap, the witness obligations are absent from the record, not faked', async () => {
   const { res } = await fixRun({ verify: 'cheap' });
-  const f = res.findings.find((x) => x.patches.length);
-  const v = f.patches[0].verification;
+  const f = must(res.findings.find((x) => x.patches.length), 'f');
+  const v = must(f.patches[0].verification, 'verification');
   for (const o of ['differential_witness', 'functional_control', 'hostile_auditor']) {
     assert.ok(!(o in v), `${o} must not be written at verify=cheap`);
   }
   for (const o of VERIFY_LEVELS.cheap) assert.ok(o in v, `${o} must be evaluated at verify=cheap`);
-  assert.strictEqual(v.frozen_target.status, 'pass');
-  assert.strictEqual(v.deterministic_guard.status, 'pass');
-  assert.strictEqual(v.no_new_findings.status, 'pass');
+  assert.strictEqual(v.frozen_target?.status, 'pass');
+  assert.strictEqual(v.deterministic_guard?.status, 'pass');
+  assert.strictEqual(v.no_new_findings?.status, 'pass');
 });
 
 t('a fix verified at cheap is never described as fully verified', async () => {
   const { res } = await fixRun({ verify: 'cheap' });
-  const f = res.findings.find((x) => x.patches.length);
-  assert.strictEqual(f.disposition.verify_level, 'cheap');
-  assert.deepStrictEqual(f.disposition.skipped_obligations.sort(),
+  const f = must(res.findings.find((x) => x.patches.length), 'f');
+  assert.strictEqual(settled(f, 'fixed', 'fixed_unwitnessed').verify_level, 'cheap');
+  assert.deepStrictEqual(settled(f, 'fixed', 'fixed_unwitnessed').skipped_obligations.sort(),
     ['differential_witness', 'functional_control', 'hostile_auditor'].sort());
-  assert.strictEqual(f.disposition.state, 'fixed_unwitnessed', 'an argued witness can never reach fixed');
+  assert.strictEqual(f.disposition?.state, 'fixed_unwitnessed', 'an argued witness can never reach fixed');
 });
 
 t('a non-argued witness tier reaches fixed', async () => {
@@ -817,26 +849,26 @@ t('a non-argued witness tier reaches fixed', async () => {
     witness: { witness: EXEC_WITNESS, writable_scope: ['src/**', 'test/**'] },
     diff: DIFF_SRC + DIFF_TEST,
   });
-  const f = res.findings.find((x) => x.patches.length);
-  assert.strictEqual(f.disposition.state, 'fixed', JSON.stringify(f.patches[0].verification));
-  assert.strictEqual(f.disposition.witness_tier, 'executable');
+  const f = must(res.findings.find((x) => x.patches.length), 'f');
+  assert.strictEqual(f.disposition?.state, 'fixed', JSON.stringify(f.patches[0].verification));
+  assert.strictEqual(settled(f, 'fixed').witness_tier, 'executable');
 });
 
 t('verify=none records the patch and skips all seven, writing no obligation at all', async () => {
   const { res } = await fixRun({ verify: 'none' });
-  const f = res.findings.find((x) => x.patches.length);
-  assert.deepStrictEqual(Object.keys(f.patches[0].verification), []);
-  assert.strictEqual(f.disposition.skipped_obligations.length, 7);
+  const f = must(res.findings.find((x) => x.patches.length), 'f');
+  assert.deepStrictEqual(Object.keys(f.patches[0].verification ?? {}), []);
+  assert.strictEqual(settled(f, 'fixed', 'fixed_unwitnessed').skipped_obligations.length, 7);
   assert.strictEqual(res.meta.verify_level, 'none');
   assert.deepStrictEqual(res.meta.verify_obligations, []);
 });
 
 t('a resumed run judges with the verify level it was started at', async () => {
   const { res } = await fixRun({ verify: 'cheap', recordedLevel: 'none' });
-  const f = res.findings.find((x) => x.patches.length);
+  const f = must(res.findings.find((x) => x.patches.length), 'f');
   assert.strictEqual(res.meta.verify_level, 'none');
-  assert.deepStrictEqual(Object.keys(f.patches[0].verification), []);
-  assert.strictEqual(f.disposition.state, 'fixed_unwitnessed');
+  assert.deepStrictEqual(Object.keys(f.patches[0].verification ?? {}), []);
+  assert.strictEqual(f.disposition?.state, 'fixed_unwitnessed');
 });
 
 t('a fresh run records its verify level before any fixer runs', async () => {
@@ -857,7 +889,7 @@ t('a fresh run records its verify level before any fixer runs', async () => {
 
 t('a fixer call that fails takes no attempt slot and leaves the finding open', async () => {
   const { res, deps } = await fixRun({ verify: 'none', fix: () => ({ ok: false, reason: 'exit 1' }) });
-  const fixable = res.findings.filter((f) => f.gate && f.gate.action === 'fix');
+  const fixable = res.findings.filter((f) => f.gate && f.gate?.action === 'fix');
   assert.ok(fixable.length > 0);
   for (const f of fixable) {
     assert.strictEqual(f.patches.length, 0);
@@ -866,7 +898,7 @@ t('a fixer call that fails takes no attempt slot and leaves the finding open', a
       `git -C ${REPO} branch -D sast-fix/${R.refSafe(res.runId)}/${f.id}/1`), f.id);
   }
   assert.strictEqual(res.meta.run_status, 'incomplete');
-  const byId = (a, b) => (a.id < b.id ? -1 : 1);
+  const byId = (a: { id: string }, b: { id: string }) => (a.id < b.id ? -1 : 1);
   assert.deepStrictEqual([...res.meta.agent_failures].sort(byId),
     fixable.map((f) => ({ id: f.id, stage: 'fix', reason: 'exit 1' })).sort(byId));
   assert.strictEqual(deps.state.agentCalls.filter((c) => c.schemaPointer === '#/$defs/fix').length, fixable.length);
@@ -874,10 +906,10 @@ t('a fixer call that fails takes no attempt slot and leaves the finding open', a
 
 t('a worktree that was never created names no branch in the handoff', async () => {
   const { res } = await fixRun({ fix: () => ({ ok: true, data: { outcome: 'cannot_fix', reason: 'x' } }) });
-  const f = res.findings.find((x) => x.patches.length);
+  const f = must(res.findings.find((x) => x.patches.length), 'f');
   f.patches[0].outcome = 'error';
   f.disposition = R.dispositionFor(f, 'cheap');
-  assert.strictEqual(f.disposition.branch, null);
+  assert.strictEqual(settled(f, 'fix_failed').branch, null);
   const handoff = renderHandoff([f], res.meta);
   assert.ok(handoff.includes(`\`${f.id}\` (\`high\`): branch none, 1 attempt made.`), handoff);
   assert.ok(!handoff.includes('sast-fix/'), handoff);
@@ -885,12 +917,12 @@ t('a worktree that was never created names no branch in the handoff', async () =
 
 t('an empty diff fails as no_diff and spends no further obligation', async () => {
   const { res } = await fixRun({ diff: '' });
-  const f = res.findings.find((x) => x.patches.length);
-  const v = f.patches[0].verification;
-  assert.strictEqual(v.deterministic_guard.status, 'fail');
-  assert.strictEqual(v.deterministic_guard.reason, 'no_diff');
+  const f = must(res.findings.find((x) => x.patches.length), 'f');
+  const v = must(f.patches[0].verification, 'verification');
+  assert.strictEqual(v.deterministic_guard?.status, 'fail');
+  assert.strictEqual(v.deterministic_guard?.reason, 'no_diff');
   assert.ok(!('no_new_findings' in v), 'verification must short-circuit on the first failure');
-  assert.strictEqual(f.disposition.state, 'fix_failed');
+  assert.strictEqual(f.disposition?.state, 'fix_failed');
 });
 
 t('a suppression comment is caught by the guard before a test or a scan runs', async () => {
@@ -901,19 +933,19 @@ t('a suppression comment is caught by the guard before a test or a scan runs', a
    const target = path.join(ROOT, name);
 `;
   const { res, deps } = await fixRun({ diff: bad });
-  const f = res.findings.find((x) => x.patches.length);
-  assert.strictEqual(f.patches[0].verification.deterministic_guard.status, 'fail');
-  assert.ok(/suppression_comment_added/.test(f.patches[0].verification.deterministic_guard.reason));
+  const f = must(res.findings.find((x) => x.patches.length), 'f');
+  assert.strictEqual(f.patches[0].verification?.deterministic_guard?.status, 'fail');
+  assert.ok(/suppression_comment_added/.test(f.patches[0].verification?.deterministic_guard?.reason));
   assert.ok(!deps.state.execCalls.some((c) => c.startsWith('npm')), 'no suite runs after the guard fails');
 });
 
 t('a red suite on the patch tree costs a second attempt and then stops at two', async () => {
-  const { res, deps } = await fixRun({ npm: (cwd) => (path.basename(cwd) === 'base' ? 0 : 1) });
-  const f = res.findings.find((x) => x.patches.length);
+  const { res, deps } = await fixRun({ npm: (cwd: string) => (path.basename(cwd) === 'base' ? 0 : 1) });
+  const f = must(res.findings.find((x) => x.patches.length), 'f');
   assert.strictEqual(f.patches.length, 2, 'there is no attempt three');
-  assert.strictEqual(f.patches[0].verification.regression_suite.status, 'fail');
-  assert.strictEqual(f.disposition.state, 'fix_failed');
-  assert.strictEqual(f.disposition.attempts, 2);
+  assert.strictEqual(f.patches[0].verification?.regression_suite?.status, 'fail');
+  assert.strictEqual(f.disposition?.state, 'fix_failed');
+  assert.strictEqual(settled(f, 'fix_failed').attempts, 2);
   const prompts = deps.state.agentCalls.filter((c) => c.schemaPointer === '#/$defs/fix').map((c) => c.prompt);
   assert.ok(/previous attempt failed/i.test(prompts[1]), 'attempt two gets the typed failures');
   assert.ok(prompts[1].includes('regression_suite'));
@@ -922,30 +954,30 @@ t('a red suite on the patch tree costs a second attempt and then stops at two', 
 
 t('a suite already red on base is unavailable rather than blamed on the patch', async () => {
   const { res } = await fixRun({ npm: () => 1 });
-  const f = res.findings.find((x) => x.patches.length);
-  assert.strictEqual(f.patches[0].verification.regression_suite.status, 'unavailable');
-  assert.strictEqual(f.patches[0].verification.regression_suite.reason, 'suite_red_on_base');
-  assert.strictEqual(f.disposition.state, 'fixed_unwitnessed', 'regression_suite alone may be unavailable');
+  const f = must(res.findings.find((x) => x.patches.length), 'f');
+  assert.strictEqual(f.patches[0].verification?.regression_suite?.status, 'unavailable');
+  assert.strictEqual(f.patches[0].verification?.regression_suite?.reason, 'suite_red_on_base');
+  assert.strictEqual(f.disposition?.state, 'fixed_unwitnessed', 'regression_suite alone may be unavailable');
 });
 
 t('the rescan records original_absent and gates only on findings the patch introduced', async () => {
   const { res } = await fixRun();
-  const f = res.findings.find((x) => x.patches.length);
-  const v = f.patches[0].verification;
-  assert.strictEqual(typeof v.rescan.original_absent, 'boolean');
-  assert.strictEqual(v.rescan.original_absent, true);
-  assert.strictEqual(v.no_new_findings.status, 'pass', 'a quiet rescan is not what passes this');
+  const f = must(res.findings.find((x) => x.patches.length), 'f');
+  const v = must(f.patches[0].verification, 'verification');
+  assert.strictEqual(typeof v.rescan?.original_absent, 'boolean');
+  assert.strictEqual(v.rescan?.original_absent, true);
+  assert.strictEqual(v.no_new_findings?.status, 'pass', 'a quiet rescan is not what passes this');
   assert.ok(!('original_absent' in v.no_new_findings), 'the obligation must not read the quiet rescan');
 });
 
 // The fixer inserts two lines above the flagged read, so the rule's hit moves from line 9 to 11
 // and its sink line text changes, which is what a correct containment check looks like.
 const PATH_ID = 'f_6ed43412e0d9b09d';
-const pathHit = (rule, line) => {
-  const hit = JSON.parse(fs.readFileSync(path.join(ROOT, 'test/fixtures/semgrep.json'), 'utf8')).results.find((r) => r.path === 'src/routes/files.js');
+const pathHit = (rule: string | null, line: number) => {
+  const hit = JSON.parse(fs.readFileSync(path.join(ROOT, 'test/fixtures/semgrep.json'), 'utf8')).results.find((r: { path: string }) => r.path === 'src/routes/files.js');
   return { ...hit, check_id: rule || hit.check_id, start: { ...hit.start, line }, end: { ...hit.end, line } };
 };
-const movingFix = (o) => {
+const movingFix = (o: { cwd: string }) => {
   const src = fs.readFileSync(path.join(REPO, 'src/routes/files.js'), 'utf8').split('\n');
   src.splice(8, 1, '  const safe = String(name);', "  if (safe.includes('..')) return res.end('no');", '  const target = path.join(ROOT, safe);');
   fs.mkdirSync(path.join(o.cwd, 'src/routes'), { recursive: true });
@@ -955,14 +987,14 @@ const movingFix = (o) => {
 
 t('at full, an argued fix ends fixed_unwitnessed after one fixer call', async () => {
   const { res, deps } = await fixRun({ verify: 'full' });
-  const f = res.findings.find((x) => x.id === PATH_ID);
+  const f = must(res.findings.find((x) => x.id === PATH_ID), PATH_ID);
   assert.strictEqual(f.patches.length, 1);
-  assert.deepStrictEqual(f.patches[0].verification.differential_witness,
+  assert.deepStrictEqual(f.patches[0].verification?.differential_witness,
     { status: 'unavailable', reason: 'argued_tier:no_test_harness' });
-  assert.deepStrictEqual(f.patches[0].verification.functional_control,
+  assert.deepStrictEqual(f.patches[0].verification?.functional_control,
     { status: 'unavailable', reason: 'argued_tier_has_no_control' });
-  for (const o of ['regression_suite', 'no_new_findings', 'hostile_auditor']) {
-    assert.strictEqual(f.patches[0].verification[o].status, 'pass', o);
+  for (const o of ['regression_suite', 'no_new_findings', 'hostile_auditor'] as const) {
+    assert.strictEqual(f.patches[0].verification?.[o]?.status, 'pass', o);
   }
   assert.deepStrictEqual(f.disposition, {
     state: 'fixed_unwitnessed', branch: `sast-fix/${R.refSafe(res.runId)}/${PATH_ID}/1`,
@@ -994,51 +1026,51 @@ const DYNAMIC_WITNESS = {
 
 t('a dynamic witness without --witness=dynamic is recorded unavailable, not thrown', async () => {
   const { res } = await fixRun({ verify: 'full', witness: { witness: DYNAMIC_WITNESS } });
-  const f = res.findings.find((x) => x.id === PATH_ID);
-  assert.deepStrictEqual(f.patches[0].verification.differential_witness,
+  const f = must(res.findings.find((x) => x.id === PATH_ID), PATH_ID);
+  assert.deepStrictEqual(f.patches[0].verification?.differential_witness,
     { status: 'unavailable', reason: 'dynamic_tier_not_enabled' });
-  assert.strictEqual(f.patches[0].verification.deterministic_guard.status, 'pass');
-  assert.strictEqual(f.disposition.state, 'fix_failed');
+  assert.strictEqual(f.patches[0].verification?.deterministic_guard?.status, 'pass');
+  assert.strictEqual(f.disposition?.state, 'fix_failed');
 });
 
 t('the same rule in the same file at a new line is not a finding the patch introduced', async () => {
   const { res } = await fixRun({ fix: movingFix, rescan: { results: [pathHit(null, 11)], errors: [] } });
-  const f = res.findings.find((x) => x.id === PATH_ID);
-  const v = f.patches[0].verification;
+  const f = must(res.findings.find((x) => x.id === PATH_ID), PATH_ID);
+  const v = must(f.patches[0].verification, 'verification');
   assert.deepStrictEqual(v.no_new_findings, { status: 'pass' });
-  assert.deepStrictEqual(v.rescan.new_findings, []);
-  assert.strictEqual(v.rescan.original_absent, false);
+  assert.deepStrictEqual(v.rescan?.new_findings, []);
+  assert.strictEqual(v.rescan?.original_absent, false);
   assert.strictEqual(f.patches.length, 1);
-  assert.strictEqual(f.disposition.state, 'fixed_unwitnessed');
+  assert.strictEqual(f.disposition?.state, 'fixed_unwitnessed');
 });
 
 t('a rule base never fired in that file is a finding the patch introduced', async () => {
   const rule = 'javascript.lang.security.detect-child-process.detect-child-process';
   const { res } = await fixRun({ fix: movingFix, rescan: { results: [pathHit(rule, 11)], errors: [] } });
-  const v = res.findings.find((x) => x.id === PATH_ID).patches[0].verification;
-  assert.strictEqual(v.no_new_findings.status, 'fail');
-  assert.strictEqual(v.no_new_findings.reason, 'rescan_new');
-  assert.strictEqual(v.no_new_findings.new_findings.length, 1);
-  assert.strictEqual(v.rescan.original_absent, true);
+  const v = must(must(res.findings.find((x) => x.id === PATH_ID), PATH_ID).patches[0].verification, 'verification');
+  assert.strictEqual(v.no_new_findings?.status, 'fail');
+  assert.strictEqual(v.no_new_findings?.reason, 'rescan_new');
+  assert.strictEqual(v.no_new_findings?.new_findings?.length, 1);
+  assert.strictEqual(v.rescan?.original_absent, true);
 });
 
 t('the rescan reruns only the scanners whose output made the baseline', async () => {
   const scans = tmp();
   fs.copyFileSync(path.join(ROOT, 'test/fixtures/semgrep.json'), path.join(scans, 'semgrep.json'));
   const { res } = await fixRun({ scans, scanners: ['semgrep', 'codeql'] });
-  const v = res.findings.find((x) => x.id === PATH_ID).patches[0].verification;
+  const v = must(must(res.findings.find((x) => x.id === PATH_ID), PATH_ID).patches[0].verification, 'verification');
   assert.deepStrictEqual(res.meta.scanners.map((s) => [s.name, s.status]), [['semgrep', 'reused'], ['codeql', 'absent']]);
-  assert.deepStrictEqual(v.rescan.scanners.map((s) => [s.name, s.status]), [['semgrep', 'ok']]);
+  assert.deepStrictEqual(v.rescan?.scanners.map((s) => [s.name, s.status]), [['semgrep', 'ok']]);
 });
 
 t('a rescan that cannot run is unavailable and excused, not a failed patch', async () => {
   const { res } = await fixRun({ onPath: () => false });
-  const f = res.findings.find((x) => x.id === PATH_ID);
-  const v = f.patches[0].verification;
+  const f = must(res.findings.find((x) => x.id === PATH_ID), PATH_ID);
+  const v = must(f.patches[0].verification, 'verification');
   assert.deepStrictEqual(v.no_new_findings, { status: 'unavailable', reason: 'rescan_produced_no_output' });
   assert.strictEqual(f.patches.length, 1);
-  assert.strictEqual(f.disposition.state, 'fixed_unwitnessed');
-  assert.deepStrictEqual(f.disposition.unavailable, ['no_new_findings']);
+  assert.strictEqual(f.disposition?.state, 'fixed_unwitnessed');
+  assert.deepStrictEqual(settled(f, 'fixed_unwitnessed').unavailable, ['no_new_findings']);
 });
 
 t('cannot_fix is a real outcome and does not burn a second attempt', async () => {
@@ -1048,7 +1080,7 @@ t('cannot_fix is a real outcome and does not burn a second attempt', async () =>
   const attempted = res.findings.filter((x) => x.patches.length);
   for (const f of attempted) {
     assert.strictEqual(f.patches.length, 1, 'cannot_fix must not trigger attempt two');
-    assert.strictEqual(f.disposition.state, 'fix_declined');
+    assert.strictEqual(f.disposition?.state, 'fix_declined');
   }
   assert.strictEqual(deps.state.agentCalls.filter((c) => c.schemaPointer === '#/$defs/fix').length,
     attempted.length, 'exactly one fixer call per declining finding');
@@ -1067,10 +1099,10 @@ t('at full, the auditor runs and a silences_rule verdict sinks the fix', async (
       },
     }),
   });
-  const f = res.findings.find((x) => x.patches.length);
+  const f = must(res.findings.find((x) => x.patches.length), 'f');
   assert.ok(deps.state.agentCalls.some((c) => c.schemaPointer === '#/$defs/audit'), 'the auditor must run at full');
-  assert.strictEqual(f.patches[0].verification.hostile_auditor.status, 'fail');
-  assert.strictEqual(f.disposition.state, 'fix_failed');
+  assert.strictEqual(f.patches[0].verification?.hostile_auditor?.status, 'fail');
+  assert.strictEqual(f.disposition?.state, 'fix_failed');
 });
 
 t('the auditor runs even when an earlier obligation already failed', async () => {
@@ -1094,10 +1126,10 @@ t('no test command still patches, and the report says no suite ran', async () =>
       '#/$defs/fix': () => ({ ok: true, data: { outcome: 'patched', declared_files: ['src/routes/files.js'], enforcement_note: 'basename' } }),
     },
   });
-  const res = await R.run(opts, deps);
+  const res = await runFull(opts, deps);
   const patched = res.findings.filter((f) => f.patches.length);
   assert.ok(patched.length > 0, 'a repo with no test script must still be patched');
-  assert.deepStrictEqual(patched[0].patches[0].verification.regression_suite,
+  assert.deepStrictEqual(patched[0].patches[0].verification?.regression_suite,
     { status: 'unavailable', reason: 'no_test_command_discovered' });
   assert.strictEqual(res.meta.incomplete_reason, null);
   const report = renderRemediation(res.findings, res.meta);
@@ -1107,10 +1139,10 @@ t('no test command still patches, and the report says no suite ran', async () =>
 t('a target that is not a git repository never reaches the fix stage', async () => {
   const opts = baseOpts(); opts.out = path.join(tmp(), 'run-1');
   const deps = makeDeps({ base: null, agents: { '#/$defs/triage': () => ({ ok: true, data: exploitable() }) } });
-  const res = await R.run(opts, deps);
+  const res = await runFull(opts, deps);
   assert.strictEqual(res.meta.base_commit, null);
   assert.ok(res.findings.every((f) => f.patches.length === 0));
-  assert.ok(/not_a_git_repository/.test(res.meta.incomplete_reason), res.meta.incomplete_reason);
+  assert.ok(/not_a_git_repository/.test(res.meta.incomplete_reason ?? ''), String(res.meta.incomplete_reason));
 });
 
 // ============================================================================
@@ -1119,13 +1151,13 @@ section('resume');
 
 t('defaultOutDir continues an unfinished run of the same commit and starts fresh otherwise', () => {
   const root = tmp(); const B = 'b'.repeat(40);
-  const mk = (n, meta?) => {
+  const mk = (n: number, meta?: object) => {
     const dir = path.join(root, 'vuln-app', `run-${n}`);
     fs.mkdirSync(dir, { recursive: true });
     if (meta) fs.writeFileSync(path.join(dir, 'run-metadata.json'), JSON.stringify(meta));
   };
   const at = () => R.defaultOutDir('/x/vuln-app', B, root);
-  const run = (n) => path.join(root, 'vuln-app', `run-${n}`);
+  const run = (n: number) => path.join(root, 'vuln-app', `run-${n}`);
 
   assert.strictEqual(at(), run(1), 'nothing created');
 
@@ -1158,18 +1190,18 @@ t('a plain re-run continues the unfinished run instead of starting run-2', async
   try {
     const agents = { '#/$defs/triage': () => ({ ok: true, data: notExploitable() }) };
     const opts1 = baseOpts(); opts1.maxFindings = 1;
-    const res1 = await R.run(opts1, makeDeps({ agents }));
+    const res1 = await runFull(opts1, makeDeps({ agents }));
     assert.strictEqual(res1.outDir, path.join(process.env.HOME, 'sast-remediate', 'vuln-app', 'run-1'));
     assert.strictEqual(res1.meta.run_status, 'incomplete');
 
     const deps2 = makeDeps({ agents });
-    const res2 = await R.run(baseOpts(), deps2);
+    const res2 = await runFull(baseOpts(), deps2);
     assert.strictEqual(res2.outDir, res1.outDir);
     assert.strictEqual(deps2.state.agentCalls.length, 2, 'only the deferred two are asked');
     assert.strictEqual(res2.meta.run_status, 'complete');
     assert.strictEqual(readJson(path.join(res1.outDir, 'run-metadata.json')).base_commit, 'a'.repeat(40));
 
-    const res3 = await R.run(baseOpts(), makeDeps({ agents }));
+    const res3 = await runFull(baseOpts(), makeDeps({ agents }));
     assert.ok(res3.outDir.endsWith('run-2'), res3.outDir);
   } finally {
     process.env.HOME = savedHome;
@@ -1179,15 +1211,15 @@ t('a plain re-run continues the unfinished run instead of starting run-2', async
 t('a failed triage call is asked again by the next run', async () => {
   const out = path.join(tmp(), 'run-1');
   const opts1 = baseOpts(); opts1.out = out; opts1.triageOnly = true;
-  await R.run(opts1, makeDeps({ agents: { '#/$defs/triage': () => ({ ok: false, reason: 'rate limited' }) } }));
+  await runFull(opts1, makeDeps({ agents: { '#/$defs/triage': () => ({ ok: false, reason: 'rate limited' }) } }));
 
   const opts2 = baseOpts(); opts2.out = out; opts2.triageOnly = true;
   const deps2 = makeDeps({ agents: { '#/$defs/triage': () => ({ ok: true, data: notExploitable() }) } });
-  const res2 = await R.run(opts2, deps2);
+  const res2 = await runFull(opts2, deps2);
   assert.strictEqual(deps2.state.agentCalls.length, 3, 'every finding is asked again, not just the failed one');
   assert.strictEqual(res2.meta.run_status, 'complete');
   assert.deepStrictEqual(res2.meta.agent_failures, []);
-  assert.ok(res2.findings.every((f) => f.disposition.state === 'rejected'));
+  assert.ok(res2.findings.every((f) => f.disposition?.state === 'rejected'));
 });
 
 t('a budget stop and a failed agent call are told apart', async () => {
@@ -1197,19 +1229,19 @@ t('a budget stop and a failed agent call are told apart', async () => {
   });
   assert.strictEqual(res.meta.counts.deferred, 2);
   assert.strictEqual(res.meta.counts.agent_failures, 1);
-  assert.ok(res.meta.incomplete_reason.includes('max_findings=1 reached, 2 finding(s) deferred to the next run'),
-    res.meta.incomplete_reason);
-  assert.ok(res.meta.incomplete_reason.includes('agent_failed: 1 agent call(s) failed and will be retried on the next run ('),
-    res.meta.incomplete_reason);
-  assert.ok(res.meta.incomplete_reason.includes('triage: timed out after 300000ms)'), res.meta.incomplete_reason);
+  assert.ok((res.meta.incomplete_reason ?? '').includes('max_findings=1 reached, 2 finding(s) deferred to the next run'),
+    String(res.meta.incomplete_reason));
+  assert.ok((res.meta.incomplete_reason ?? '').includes('agent_failed: 1 agent call(s) failed and will be retried on the next run ('),
+    String(res.meta.incomplete_reason));
+  assert.ok((res.meta.incomplete_reason ?? '').includes('triage: timed out after 300000ms)'), String(res.meta.incomplete_reason));
 });
 
 t('a failed second fix attempt keeps the first attempt and the finding open', async () => {
   const { res: res1, out } = await fixRun({
-    npm: (cwd) => (path.basename(cwd) === 'base' ? 0 : 1),
-    fix: (o) => (o.cwd.endsWith('-1') ? PATCHED : { ok: false, reason: 'rate limited' }),
+    npm: (cwd: string) => (path.basename(cwd) === 'base' ? 0 : 1),
+    fix: (o: AgentOpts) => (o.cwd?.endsWith('-1') ? PATCHED : { ok: false, reason: 'rate limited' }),
   });
-  const fixable1 = res1.findings.filter((f) => f.gate && f.gate.action === 'fix');
+  const fixable1 = res1.findings.filter((f) => f.gate && f.gate?.action === 'fix');
   assert.ok(fixable1.length > 0);
   for (const f of fixable1) {
     assert.strictEqual(f.patches.length, 1);
@@ -1220,11 +1252,11 @@ t('a failed second fix attempt keeps the first attempt and the finding open', as
   assert.strictEqual(res1.meta.run_status, 'incomplete');
 
   const { res: res2 } = await fixRun({ out, npm: () => 0 });
-  const fixable2 = res2.findings.filter((f) => f.gate && f.gate.action === 'fix');
+  const fixable2 = res2.findings.filter((f) => f.gate && f.gate?.action === 'fix');
   for (const f of fixable2) {
     assert.strictEqual(f.patches.length, 2);
     assert.strictEqual(f.patches[1].attempt, 2);
-    assert.strictEqual(f.disposition.state, 'fixed_unwitnessed', 'the default contract is argued');
+    assert.strictEqual(f.disposition?.state, 'fixed_unwitnessed', 'the default contract is argued');
   }
   assert.strictEqual(res2.meta.run_status, 'complete');
 });
@@ -1232,7 +1264,7 @@ t('a failed second fix attempt keeps the first attempt and the finding open', as
 t('a record deferred by a failed triage call under the old rules is reopened', async () => {
   const out = path.join(tmp(), 'run-1');
   const opts1 = baseOpts(); opts1.out = out; opts1.triageOnly = true;
-  const res1 = await R.run(opts1, makeDeps({ agents: { '#/$defs/triage': () => ({ ok: true, data: notExploitable() }) } }));
+  const res1 = await runFull(opts1, makeDeps({ agents: { '#/$defs/triage': () => ({ ok: true, data: notExploitable() }) } }));
   const id = res1.findings[0].id;
   const file = path.join(out, 'findings', `${id}.json`);
   const record = readJson(file);
@@ -1243,16 +1275,16 @@ t('a record deferred by a failed triage call under the old rules is reopened', a
 
   const opts2 = baseOpts(); opts2.out = out; opts2.triageOnly = true;
   const deps2 = makeDeps({ agents: { '#/$defs/triage': () => ({ ok: true, data: notExploitable() }) } });
-  const res2 = await R.run(opts2, deps2);
+  const res2 = await runFull(opts2, deps2);
   assert.strictEqual(deps2.state.agentCalls.length, 1, 'only the reopened record is asked again');
-  const reopened = res2.findings.find((f) => f.id === id);
-  assert.strictEqual(reopened.disposition.state, 'rejected');
+  const reopened = must(res2.findings.find((f) => f.id === id), 'reopened');
+  assert.strictEqual(reopened.disposition?.state, 'rejected');
 });
 
 t('a fix that failed on a dead agent call under the old rules is tried again', async () => {
   const { res: res1, out } = await fixRun();
-  const f1 = res1.findings.find((x) => x.patches.length === 1);
-  const state1 = f1.disposition.state;
+  const f1 = must(res1.findings.find((x) => x.patches.length === 1), 'f1');
+  const state1 = f1.disposition?.state;
   const file = path.join(out, 'findings', `${f1.id}.json`);
   const record = readJson(file);
   const p0 = record.patches[0];
@@ -1264,10 +1296,10 @@ t('a fix that failed on a dead agent call under the old rules is tried again', a
   const { res: res2, deps: deps2 } = await fixRun({ out });
   const fixCalls = deps2.state.agentCalls.filter((c) => c.schemaPointer === '#/$defs/fix');
   assert.strictEqual(fixCalls.length, 1);
-  const reopened = res2.findings.find((x) => x.id === f1.id);
+  const reopened = must(res2.findings.find((x) => x.id === f1.id), 'reopened');
   assert.strictEqual(reopened.patches.length, 1);
   assert.strictEqual(reopened.patches[0].outcome, 'patched');
-  assert.strictEqual(reopened.disposition.state, state1);
+  assert.strictEqual(reopened.disposition?.state, state1);
 });
 
 // ============================================================================
@@ -1310,7 +1342,7 @@ t('the triage return schema carries no unresolved cross-file pointer', () => {
 t('every local $defs pointer in the triage schema resolves inside the bundle', () => {
   const o = JSON.parse(R.bundleDef('triage'));
   const pointers = new Set<string>();
-  const walk = (n) => {
+  const walk = (n: unknown): void => {
     if (Array.isArray(n)) return n.forEach(walk);
     if (!n || typeof n !== 'object') return;
     for (const [k, v] of Object.entries(n)) {
@@ -1365,7 +1397,7 @@ t('an operator-supplied run id is made safe for a git ref', () => {
 section('leaks: every fixer-visible field is guarded, and a refusal never crashes the run');
 
 const FSCHEMA = JSON.parse(fs.readFileSync(path.join(ROOT, 'schema/finding.schema.json'), 'utf8'));
-const contractErrs = (c) => validate({ $ref: '#/$defs/security_contract', $defs: FSCHEMA.$defs }, c, SCHEMA_DIR);
+const contractErrs = (c: unknown) => validate({ $ref: '#/$defs/security_contract', $defs: FSCHEMA.$defs }, c, SCHEMA_DIR);
 
 t('forbidden_resolutions naming the scanner is rejected at the triage boundary', () => {
   // Verbatim from a live triage that crashed a run.
@@ -1415,9 +1447,9 @@ t('a leak that slips past the schema refuses that finding and the run still comp
   assert.strictEqual(fixerCalls, 0, 'a leaking prompt must never reach the fixer');
   const refused = res.findings.flatMap((f) => f.patches).filter((p) => p.outcome === 'refused');
   assert.ok(refused.length > 0, 'the refusal is recorded on the patch');
-  assert.ok(refused.every((p) => p.detail.startsWith('fixer_prompt_leak')), refused.map((p) => p.detail).join('; '));
+  assert.ok(refused.every((p) => p.detail?.startsWith('fixer_prompt_leak')), refused.map((p) => p.detail).join('; '));
   for (const f of res.findings.filter((x) => x.patches.length)) {
-    assert.deepStrictEqual([f.patches.length, f.disposition.state, f.disposition.outcome], [1, 'fix_failed', 'refused'],
+    assert.deepStrictEqual([f.patches.length, settled(f, 'fix_failed').outcome], [1, 'refused'],
       'a refusal is final, like cannot_fix');
   }
   assert.ok(fs.existsSync(path.join(out, 'run-metadata.json')), 'the run wrote its metadata instead of crashing');
@@ -1429,7 +1461,7 @@ t('a leak that slips past the schema refuses that finding and the run still comp
 section('languages: CodeQL sees every language in the repository');
 
 // The merged SARIF is scanner output, so the test names the one path it reads.
-const runNames = (raw) => (raw.codeql as { runs: { tool: { driver: { name: string } } }[] }).runs.map((x) => x.tool.driver.name);
+const runNames = (raw: { codeql?: unknown }) => (raw.codeql as { runs: { tool: { driver: { name: string } } }[] }).runs.map((x) => x.tool.driver.name);
 
 const tree = (files: Record<string, string>) => {
   const d = tmp();
@@ -1440,14 +1472,14 @@ const tree = (files: Record<string, string>) => {
   return d;
 };
 // A fake codeql: each analyze writes a one-run SARIF whose driver name is its language.
-const codeqlDeps = (failCreate = []) => ({
+const codeqlDeps = (failCreate: string[] = []): S.ScanDeps => ({
   onPath: () => true,
   exec: (cmd, args) => {
     const lang = (args.find((a) => a.startsWith('--language=')) || '').slice('--language='.length)
       || path.basename(args[2]).replace('codeql-db-', '');
     if (args[1] === 'create') return failCreate.includes(lang)
       ? { status: 32, stdout: '', stderr: `no ${lang} source seen` } : { status: 0, stdout: '', stderr: '' };
-    const out = args.find((a) => a.startsWith('--output=')).slice('--output='.length);
+    const out = must(args.find((a) => a.startsWith('--output=')), 'the --output argument').slice('--output='.length);
     fs.writeFileSync(out, JSON.stringify({ version: '2.1.0', runs: [{ tool: { driver: { name: lang, rules: [] } }, results: [] }] }));
     return { status: 0, stdout: '', stderr: '' };
   },
@@ -1506,7 +1538,7 @@ t("the rescan analyses the baseline's languages, not whatever the patch left beh
   for (const [name, fn] of tests) {
     if (!fn) { console.log(`\n${name}`); continue; }
     try { await fn(); pass++; console.log(`  ok   ${name}`); }
-    catch (e) { fail++; console.log(`  FAIL ${name}\n         ${e.message}`); }
+    catch (e) { fail++; console.log(`  FAIL ${name}\n         ${e instanceof Error ? e.message : e}`); }
   }
   for (const d of tmpDirs) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
 console.log(`\n${pass} passed, ${fail} failed`);

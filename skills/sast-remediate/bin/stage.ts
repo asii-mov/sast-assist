@@ -9,6 +9,7 @@
 
 import fs from 'fs';
 import type { AgentAudit, Finding, Severity } from '../schema/types.ts';
+import type { Rescan } from './scan.ts';
 
 // ---------------------------------------------------------------------- stage
 
@@ -73,7 +74,7 @@ type Obligation = typeof OBLIGATIONS[number];
 type ObligationResult =
   | { status: 'pass'; reason?: undefined; detail?: string; transcript?: unknown[]; stopped_at?: unknown }
   | { status: 'fail' | 'unavailable'; reason: string; transcript?: unknown[]; violations?: unknown[]; new_findings?: string[] };
-type Verification = Partial<Record<Obligation, ObligationResult>> & { rescan?: unknown };
+type Verification = Partial<Record<Obligation, ObligationResult>> & { rescan?: Rescan };
 
 type Patch = {
   attempt: number;

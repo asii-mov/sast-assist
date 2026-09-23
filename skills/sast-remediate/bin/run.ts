@@ -337,7 +337,7 @@ function bundleDef(name: string): string {
   return JSON.stringify({ ...root, $defs: defs }, null, 2);
 }
 
-function buildTriagePrompt(f: FindingRecord, ctx: Ctx): string {
+function buildTriagePrompt(f: FindingRecord, ctx: Pick<Ctx, 'testCommand' | 'witnessTiers'> & { appHarness?: AppHarness[] | null }): string {
   const rubric = fs.readFileSync(path.join(ROOT, 'references/TRIAGE.md'), 'utf8');
   const branch = bundleDef('triage');
   const sites = f.sites.map((s) => {
@@ -446,7 +446,9 @@ function witnessBrief(w: Witness): string {
   }
 }
 
-function buildFixPrompt(f: FindingRecord, ctx: Ctx, priorFailures?: Patch['typed_failures']): string {
+// Only the repository commands come from the run context, and a missing one reads as undiscovered.
+function buildFixPrompt(f: FindingRecord, ctx: Partial<Pick<Ctx, 'buildCommand' | 'testCommand' | 'lintCommand'>>,
+  priorFailures?: Patch['typed_failures']): string {
   const c = contractOf(f);
   const parts = [
     'Make the invariant below true. You are given a property about values and boundaries, not a',
@@ -714,7 +716,7 @@ function runFunctionalControl(contract: SecurityContract, patch: Patch, ctx: Fix
   return { status: 'unavailable', reason: 'http_control_needs_the_dynamic_tier' };
 }
 
-function buildAuditPrompt(f: FindingRecord, patch: Patch, diff: string): string {
+function buildAuditPrompt(f: FindingRecord, patch: Pick<Patch, 'enforcement_note'>, diff: string): string {
   const c = contractOf(f);
   return [
     'Disprove the claim below. You did not triage this and you did not write this patch. You are',

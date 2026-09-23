@@ -367,8 +367,7 @@ function renderRemediation(findings: FindingRecord[], meta: RunMeta): string {
   } else {
     const rows = shipped.map((f) => {
       if (f.disposition.skipped_obligations.includes('no_new_findings')) return [code(f.id), 'rescan skipped at this verify level'];
-      const rescan = lastPatch(f).verification?.rescan as { original_absent?: boolean | null } | undefined;
-      const absent = rescan?.original_absent;
+      const absent = lastPatch(f).verification?.rescan?.original_absent;
       const status = absent === null ? 'the rescan produced no output'
         : absent ? 'scanner is quiet on the original rule' : 'scanner still fires on the original rule';
       return [code(f.id), `${status} (observation only; the outcome above does not depend on this)`];
