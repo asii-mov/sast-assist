@@ -31,8 +31,14 @@ function convert(file: string, text: string): { text: string; leftovers: string[
   const lines = text.replace(/^'use strict';\n/m, '').split('\n');
   for (const [i, line] of lines.entries()) {
     const wasInTemplate = inTemplate;
-    for (const m of line.matchAll(/(?<!\\)`/g)) inTemplate = !inTemplate;
-    if (wasInTemplate) { out.push(line); continue; }
+    inTemplate = endsInTemplate(line, inTemplate);
+    if (wasInTemplate) {
+      if (/\brequire\b|\bmodule\.exports\b|__dirname/.test(line)) {
+        console.log(`skipped as template text ${path.relative(REPO, file)}:${i + 1}: ${line.trim()}`);
+      }
+      out.push(line);
+      continue;
+    }
     let l = line;
     let m: RegExpExecArray | null;
     if ((m = /^const (\w+) = require\('([^./][^']*)'\);$/.exec(l))) {
@@ -62,6 +68,40 @@ function convert(file: string, text: string): { text: string; leftovers: string[
     return `export {${body}};`;
   });
   return { text: result, leftovers };
+}
+
+// Whether a template literal is still open at the end of `line`. Quotes, comments and regex
+// literals are stepped over so a backtick inside them does not count. A `/` opens a regex when
+// the previous significant character could not end an expression.
+function endsInTemplate(line: string, open: boolean): boolean {
+  let state: 'code' | 'template' | "'" | '"' | 'regex' | 'class' = open ? 'template' : 'code';
+  let prev = '';
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (state === 'template') {
+      if (c === '\\') i++;
+      else if (c === '`') { state = 'code'; prev = '`'; }
+      continue;
+    }
+    if (state === "'" || state === '"') {
+      if (c === '\\') i++;
+      else if (c === state) { state = 'code'; prev = c; }
+      continue;
+    }
+    if (state === 'regex' || state === 'class') {
+      if (c === '\\') i++;
+      else if (state === 'regex' && c === '[') state = 'class';
+      else if (state === 'class' && c === ']') state = 'regex';
+      else if (state === 'regex' && c === '/') { state = 'code'; prev = '/'; }
+      continue;
+    }
+    if (c === '/' && line[i + 1] === '/') break;
+    if (c === '`') state = 'template';
+    else if (c === "'" || c === '"') state = c;
+    else if (c === '/' && !/[\w$)\]]/.test(prev)) state = 'regex';
+    if (!/\s/.test(c)) prev = c;
+  }
+  return state === 'template';
 }
 
 // A builtin required inside a block (usually the CLI entry) becomes a top-level import.
