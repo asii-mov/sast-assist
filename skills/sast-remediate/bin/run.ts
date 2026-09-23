@@ -20,12 +20,14 @@ const ROOT = path.resolve(import.meta.dirname, '..');
 const FINDING_SCHEMA = path.join(ROOT, 'schema/finding.schema.json');
 const AGENT_SCHEMA = path.join(ROOT, 'schema/agent-results.schema.json');
 
-import { stageOf, evaluateVerification, VERIFY_LEVELS, excused } from './stage.ts';
-import type { Patch, Verification, Evaluation, ObligationResult } from './stage.ts';
-import type { ScanConfig, ScannerStatus } from './scan.ts';
-import type { Obligation, VerifyLevel } from './stage.ts';
+import { stageOf, evaluateVerification, VERIFY_LEVELS, excused, isVerifyLevel } from './stage.ts';
+import type { Disposition, Evaluation, FindingRecord, Obligation, ObligationResult, Patch, Verification, VerifyLevel } from './stage.ts';
+import type { Baseline, ScanConfig, ScanDeps, ScannerStatus, SyncExec } from './scan.ts';
 import type { Policy } from './gate.ts';
 import type { AgentFailure } from './resume.ts';
+import type { AgentOpts, AgentResult } from './agent.ts';
+import type { AppHarness } from './app-harness.ts';
+import type { AgentAudit, AgentFix, AgentTriage, SecurityContract, Severity, TaintFlow, Witness } from '../schema/types.ts';
 
 // run-metadata.json: written once per run by the parent, read by the report and by resume.
 type RunMeta = {
@@ -35,10 +37,10 @@ type RunMeta = {
   agent_failures: AgentFailure[]; dropped: string[]; scanners: ScannerStatus[];
   counts: Record<string, number>; started_at: string; finished_at: string;
 };
-import { gate, order } from './gate.ts';
+import { gate, order, isSeverity, RANK } from './gate.ts';
 import { normalize, makeRepo } from './normalize.ts';
 import { runScanners, onPath, trim, baselineOf, rescan, DEFAULT_SCAN_CONFIG, SUITE_NAME, semgrepConfigArg, SCANNERS } from './scan.ts';
-import { validate } from './validate.ts';
+import { validate, isRecord } from './validate.ts';
 import { guardDiff } from './patch-guard.ts';
 import { defaultOutDir, readRecorded, mergeExisting, clearAttempt, incompleteReason } from './resume.ts';
 import { assertNoLeak, leakError, recordTerms, authoredProse } from './leak-guard.ts';
@@ -47,15 +49,53 @@ import { renderRemediation, renderHandoff } from './report.ts';
 import { witnessObligations } from './witness-run.ts';
 import { discoverAppHarness } from './app-harness.ts';
 
+type Opts = {
+  target: string; out: string | null; fixAt: Severity; verify: VerifyLevel; witness: 'dynamic' | null;
+  scanners: string[]; scans: string | null; triageOnly: boolean; maxFindings: number;
+  model: string | null; dryRun: boolean; timeoutMs: number; scanConfig: ScanConfig;
+};
+type Deps = ScanDeps & {
+  onPath: (bin: string) => boolean;
+  runAgent: (opts: AgentOpts) => Promise<AgentResult>;
+  renderRemediation: (findings: FindingRecord[], meta: RunMeta) => string;
+  renderHandoff: (findings: FindingRecord[], meta: RunMeta) => string;
+  log: (m: string) => void;
+  now: () => string;
+};
+type Git = (args: string[], cwd?: string) => ReturnType<SyncExec>;
+type Ctx = {
+  opts: Opts; deps: Deps; target: string; outDir: string; runId: string; worktreeRoot: string;
+  git: Git; base: string | null; save: (f: FindingRecord) => void; testCommand: string | null;
+  appHarness: AppHarness[]; buildCommand: null; lintCommand: null; witnessTiers: string[];
+  baseline: Baseline; baseTree?: string;
+};
+// Fixing needs a commit to branch from, so the fix and verify stages only ever see this.
+type FixCtx = Ctx & { base: string };
+
+// Which answer each agent-results pointer yields. runAgent has already checked the answer
+// against the schema at that pointer, so the pointer is what names its type.
+type AgentAnswer = { '#/$defs/triage': AgentTriage; '#/$defs/fix': AgentFix; '#/$defs/audit': AgentAudit };
+
+async function ask<P extends keyof AgentAnswer>(ctx: Ctx, pointer: P, o: Omit<AgentOpts, 'schemaPath' | 'schemaPointer'>) {
+  const res = await ctx.deps.runAgent({ ...o, schemaPath: AGENT_SCHEMA, schemaPointer: pointer });
+  return res.ok ? { ok: true as const, data: res.data as AgentAnswer[P] } : res;
+}
+
+// gate() routes only an exploitable triage to fix, so fix, verify and the audit can rely on it.
+function contractOf(f: FindingRecord): SecurityContract {
+  if (f.triage?.verdict !== 'exploitable') throw new Error(`${f.id} reached the fix stage without an exploitable triage`);
+  return f.triage.contract;
+}
+
 // --out is operator-controlled and git rejects spaces, `~ ^ : ? * [ \\`, `..` and a leading dot.
-const refSafe = (s) => String(s).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/\.{2,}/g, '.')
+const refSafe = (s: unknown) => String(s).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/\.{2,}/g, '.')
   .replace(/^[-.]+|[.-]+$/g, '') || 'run';
-const sha256 = (s) => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
+const sha256 = (s: string) => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
 
 // Worktrees live outside the output directory, whose findings/ and scans/ name the rule the fixer
 // is never shown. Derived from the output directory so a resumed run finds its base tree again.
 const cacheHome = () => process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
-const worktreeRootFor = (outDir) =>
+const worktreeRootFor = (outDir: string) =>
   path.join(cacheHome(), 'sast-remediate', 'worktrees', sha256(path.resolve(outDir)).slice(0, 16));
 
 // ------------------------------------------------------------------------ cli
@@ -79,10 +119,10 @@ const USAGE = `usage: run.ts --target=DIR [options]
 
 class UsageError extends Error {}
 
-const SEVERITIES = ['informational', 'low', 'medium', 'high', 'critical'];
-
-function parseArgs(argv) {
-  const opts = {
+function parseArgs(argv: string[]): Opts {
+  // Collected as written, then checked below before it becomes Opts.
+  const opts: Omit<Opts, 'target' | 'fixAt' | 'verify' | 'witness'>
+    & { target: string | null; fixAt: string; verify: string; witness: string | null } = {
     target: null, out: null, fixAt: 'medium', verify: 'cheap', witness: null,
     scanners: [...SCANNERS], scans: null, triageOnly: false, maxFindings: Infinity,
     model: null, dryRun: false, timeoutMs: 300000,
@@ -115,10 +155,11 @@ function parseArgs(argv) {
       default: throw new UsageError(`unknown option: ${a}`);
     }
   }
-  if (!opts.target) throw new UsageError('--target is required');
-  if (!SEVERITIES.includes(opts.fixAt)) throw new UsageError(`--fix-at must be one of ${SEVERITIES.join('|')}`);
-  if (!(opts.verify in VERIFY_LEVELS)) throw new UsageError(`--verify must be one of ${Object.keys(VERIFY_LEVELS).join('|')}`);
-  if (opts.witness !== null && opts.witness !== 'dynamic') throw new UsageError('--witness must be dynamic');
+  const { target, fixAt, verify, witness } = opts;
+  if (!target) throw new UsageError('--target is required');
+  if (!isSeverity(fixAt)) throw new UsageError(`--fix-at must be one of ${Object.keys(RANK).join('|')}`);
+  if (!isVerifyLevel(verify)) throw new UsageError(`--verify must be one of ${Object.keys(VERIFY_LEVELS).join('|')}`);
+  if (witness !== null && witness !== 'dynamic') throw new UsageError('--witness must be dynamic');
   for (const s of opts.scanners) if (!SCANNERS.includes(s)) throw new UsageError(`unknown scanner: ${s}`);
   if (!opts.scanners.length) throw new UsageError('--scanners must name at least one scanner');
   if (!(opts.maxFindings > 0)) throw new UsageError('--max-findings must be a positive integer');
@@ -126,54 +167,56 @@ function parseArgs(argv) {
   if (!SUITE_NAME.test(opts.scanConfig.codeql_suite)) {
     throw new UsageError('--codeql-suite must be a suite name such as security-extended');
   }
-  return opts;
+  return { ...opts, target, fixAt, verify, witness };
 }
 
 // ----------------------------------------------------------------------- deps
 
 // Everything that touches a process or an agent arrives through here, so a test drives the whole
 // pipeline without a scanner, a network or a real model.
-function realExec(cmd, args, o: { cwd?: string; timeoutMs?: number } = {}) {
+function realExec(cmd: string, args: string[], o: { cwd?: string; timeoutMs?: number } = {}): ReturnType<SyncExec> {
   const r = spawnSync(cmd, args, {
     cwd: o.cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
     timeout: o.timeoutMs || 900000, env: process.env,
   });
   return {
-    status: r.error ? -1 : r.status,
+    status: r.error ? -1 : (r.status ?? -1),
     stdout: r.stdout || '',
     stderr: r.stderr || (r.error ? r.error.message : ''),
   };
 }
 
-function realDeps() {
+function realDeps(): Deps {
   return {
     runAgent,
     renderRemediation,
     renderHandoff,
     exec: realExec,
     onPath,
-    log: (m) => console.error(m),
+    log: (m: string) => console.error(m),
     now: () => new Date().toISOString(),
   };
 }
 
-const ensureDir = (d) => fs.mkdirSync(d, { recursive: true });
-const writeJson = (f, o) => { ensureDir(path.dirname(f)); fs.writeFileSync(f, JSON.stringify(o, null, 2) + '\n'); };
-const readJson = (f) => JSON.parse(fs.readFileSync(f, 'utf8'));
+const ensureDir = (d: string) => fs.mkdirSync(d, { recursive: true });
+const writeJson = (f: string, o: unknown) => { ensureDir(path.dirname(f)); fs.writeFileSync(f, JSON.stringify(o, null, 2) + '\n'); };
+const readJson = (f: string): unknown => JSON.parse(fs.readFileSync(f, 'utf8'));
+// Our own schema files, read for their $defs.
+const readSchema = (f: string) => readJson(f) as { $defs: Record<string, unknown> };
 
 // ------------------------------------------------------------------- 1. scan
 
 const TEST_COMMANDS: [marker: string, make: (root: string) => string | null][] = [
   ['package.json', (root) => {
     const pkg = readJson(path.join(root, 'package.json'));
-    return pkg.scripts && pkg.scripts.test ? 'npm test' : null;
+    return isRecord(pkg) && isRecord(pkg.scripts) && pkg.scripts.test ? 'npm test' : null;
   }],
   ['pyproject.toml', () => 'pytest'],
   ['pytest.ini', () => 'pytest'],
   ['go.mod', () => 'go test ./...'],
   ['Cargo.toml', () => 'cargo test'],
 ];
-function discoverTestCommand(root) {
+function discoverTestCommand(root: string): string | null {
   for (const [marker, make] of TEST_COMMANDS) {
     if (!fs.existsSync(path.join(root, marker))) continue;
     try { const c = make(root); if (c) return c; } catch { /* a malformed manifest is not a test command */ }
@@ -183,13 +226,14 @@ function discoverTestCommand(root) {
 
 // --------------------------------------------------------- 2. normalize and validate
 
-function normalizeAndValidate(raw, target, runId) {
+function normalizeAndValidate(raw: Parameters<typeof normalize>[0], target: string, runId: string) {
   const res = normalize(raw, makeRepo(target), runId);
-  const errs = validate(readJson(FINDING_SCHEMA), res.findings, path.dirname(FINDING_SCHEMA));
+  const errs = validate(readSchema(FINDING_SCHEMA), res.findings, path.dirname(FINDING_SCHEMA));
   if (errs.length) {
     throw new Error(`normalized findings do not validate:\n  ${errs.slice(0, 10).join('\n  ')}`);
   }
-  return res;
+  // Validated just above against the schema FindingRecord is built from.
+  return { ...res, findings: res.findings as FindingRecord[] };
 }
 
 // ------------------------------------------------------------- 3. pre-resolve
@@ -205,16 +249,16 @@ const POLICY_PATHS: [kind: string, pattern: RegExp][] = [
   ['migrations', /(^|\/)(migrations?|db\/migrate|alembic\/versions)(\/|$)/i],
 ];
 
-function pathPolicy(finding) {
+function pathPolicy(finding: FindingRecord) {
   const hits = finding.sites.map((s) => {
     const rule = POLICY_PATHS.find(([, re]) => re.test(s.locus.file));
     return rule ? { file: s.locus.file, kind: rule[0], pattern: String(rule[1]) } : null;
   });
   // Every site must match, or the finding still reaches code the operator asked about.
-  return hits.every(Boolean) ? hits[0] : null;
+  return hits.every((h) => h !== null) ? hits[0] : null;
 }
 
-function preResolve(findings) {
+function preResolve(findings: FindingRecord[]): number {
   let resolved = 0;
   for (const f of findings) {
     if (f.triage) continue;
@@ -237,7 +281,7 @@ function preResolve(findings) {
 
 // ----------------------------------------------------------------- 4. triage
 
-const TRIAGE_FLOW_NOTE = {
+const TRIAGE_FLOW_NOTE: Record<TaintFlow['kind'], string> = {
   traced: 'The path below is this candidate\'s claimed route from source to sink. Attack it. Find the '
     + 'step where it is wrong. Check whether any step normalizes, validates, binds, escapes or '
     + 'authorizes the value. Compare what each component guarantees against what the next assumes.',
@@ -247,7 +291,7 @@ const TRIAGE_FLOW_NOTE = {
     + 'is outside this repository, the verdict is undecidable.',
 };
 
-function flowBlock(flow) {
+function flowBlock(flow: TaintFlow): string {
   if (flow.kind === 'sink_only') {
     const s = flow.sink;
     return `sink: ${s.file}:${s.line}${s.symbol ? ` in ${s.symbol}` : ''}\n    ${s.code}`;
@@ -268,11 +312,11 @@ function flowBlock(flow) {
 // pointer reached from here resolves against finding.schema.json without ambiguity.
 const DEF_REF = /^(?:finding\.schema\.json)?#\/\$defs\/(.+)$/;
 
-function bundleDef(name) {
-  const agent = readJson(AGENT_SCHEMA);
-  const finding = readJson(FINDING_SCHEMA);
-  const defs = {};
-  const walk = (node) => {
+function bundleDef(name: string): string {
+  const agent = readSchema(AGENT_SCHEMA);
+  const finding = readSchema(FINDING_SCHEMA);
+  const defs: Record<string, unknown> = {};
+  const walk = (node: unknown): unknown => {
     if (Array.isArray(node)) return node.map(walk);
     if (!node || typeof node !== 'object') return node;
     const out: Record<string, unknown> = {};
@@ -289,11 +333,11 @@ function bundleDef(name) {
     }
     return out;
   };
-  const root = walk(agent.$defs[name]);
+  const root = walk(agent.$defs[name]) as Record<string, unknown>;
   return JSON.stringify({ ...root, $defs: defs }, null, 2);
 }
 
-function buildTriagePrompt(f, ctx) {
+function buildTriagePrompt(f: FindingRecord, ctx: Ctx): string {
   const rubric = fs.readFileSync(path.join(ROOT, 'references/TRIAGE.md'), 'utf8');
   const branch = bundleDef('triage');
   const sites = f.sites.map((s) => {
@@ -325,17 +369,16 @@ function buildTriagePrompt(f, ctx) {
 
 const TRIAGE_TOOLS = ['Read', 'Grep', 'Glob'];
 
-async function triageAll(findings, ctx) {
+async function triageAll(findings: FindingRecord[], ctx: Ctx) {
   const queue = order(findings).filter((f) => stageOf(f, ctx.opts.verify) === 'triage');
   const budget = ctx.opts.maxFindings;
   const doing = queue.slice(0, budget);
   const deferred = queue.slice(budget).map((f) => f.id);
-  const failed = [];
+  const failed: AgentFailure[] = [];
 
   for (const f of doing) {
-    const res = await ctx.deps.runAgent({
+    const res = await ask(ctx, '#/$defs/triage', {
       prompt: buildTriagePrompt(f, ctx),
-      schemaPath: AGENT_SCHEMA, schemaPointer: '#/$defs/triage',
       cwd: ctx.target, model: ctx.opts.model, timeoutMs: ctx.opts.timeoutMs,
       tools: TRIAGE_TOOLS,
     });
@@ -343,7 +386,7 @@ async function triageAll(findings, ctx) {
       // No answer is not a verdict. The record stays at triage, so the next run asks again.
       failed.push({ id: f.id, stage: 'triage', reason: res.reason });
       continue;
-    } else if (res.data.split) {
+    } else if ('split' in res.data) {
       // Re-emitting the split sites as separate findings is not implemented; the record is
       // handed to a human rather than silently triaged under a contract that fits neither half.
       f.disposition = { state: 'deferred', reason: 'split_requested', detail: res.data.split };
@@ -357,11 +400,11 @@ async function triageAll(findings, ctx) {
 
 // ------------------------------------------------------------------- 5. gate
 
-function gateAll(findings, policy, ctx) {
+function gateAll(findings: FindingRecord[], policy: Policy, ctx: Ctx): number {
   let n = 0;
   for (const f of findings) {
     if (stageOf(f, ctx.opts.verify) !== 'gate') continue;
-    f.gate = gate(f.triage, policy);
+    if (f.triage) f.gate = gate(f.triage, policy);
     ctx.save(f);
     n++;
   }
@@ -377,7 +420,7 @@ function gateAll(findings, policy, ctx) {
 // named fields of the frozen contract and the flow, and a finding record is never stringified
 // into it. The flow's per-step `note` is scanner-authored text and is therefore dropped; the
 // materialized source line is what the fixer actually needs.
-function witnessBrief(w) {
+function witnessBrief(w: Witness): string {
   switch (w.tier) {
     case 'dynamic':
       return `tier: dynamic\nattack: ${JSON.stringify(w.attack)}\nobservable: ${JSON.stringify(w.observable)}\n`
@@ -396,13 +439,15 @@ function witnessBrief(w) {
     case 'argued':
       return `tier: argued\nobstacle: ${w.obstacle}\n${w.why}\n`
         + 'No mechanical witness exists here. Make the enforcement legible in the code itself.';
-    default:
-      throw new Error(`unknown witness tier: ${w.tier}`);
+    default: {
+      const unknown: never = w;
+      throw new Error(`unknown witness tier: ${(unknown as { tier: unknown }).tier}`);
+    }
   }
 }
 
-function buildFixPrompt(f, ctx, priorFailures) {
-  const c = f.triage.contract;
+function buildFixPrompt(f: FindingRecord, ctx: Ctx, priorFailures?: Patch['typed_failures']): string {
+  const c = contractOf(f);
   const parts = [
     'Make the invariant below true. You are given a property about values and boundaries, not a',
     'defect report. Return exactly one JSON object and no other text.',
@@ -446,7 +491,7 @@ const AUDIT_TOOLS = ['Read', 'Grep', 'Glob'];
 
 // Stages exactly the declared files on top of base, whether or not the fixer committed. Anything
 // else the call left in the worktree, such as a hook's state file, never reaches the branch.
-function collectDiff(wt, base, files, ctx) {
+function collectDiff(wt: string, base: string, files: string[], ctx: Ctx): string {
   ctx.git(['reset', '-q', '--soft', base], wt);
   ctx.git(['reset', '-q'], wt);
   for (const file of files) ctx.git(['add', '-A', '--', file], wt);
@@ -454,7 +499,7 @@ function collectDiff(wt, base, files, ctx) {
   return r.status === 0 ? r.stdout : '';
 }
 
-async function fixOne(f, ctx) {
+async function fixOne(f: FindingRecord, ctx: FixCtx): Promise<{ failed: string } | undefined> {
   const attempt = f.patches.length + 1;
   // Branches live in the target repository, which outlives any one run; worktrees live under
   // ctx.worktreeRoot and everything else in the per-run output directory. Without the run id, a
@@ -483,14 +528,13 @@ async function fixOne(f, ctx) {
   }
   const patch: Patch = {
     attempt, branch, worktree: wt,
-    contract_hash: sha256(JSON.stringify(f.triage.contract)),
+    contract_hash: sha256(JSON.stringify(contractOf(f))),
     outcome: null, declared_files: [], enforcement_note: null, verification: null,
   };
   f.patches.push(patch);
 
-  const res = await ctx.deps.runAgent({
-    prompt, schemaPath: AGENT_SCHEMA, schemaPointer: '#/$defs/fix',
-    cwd: wt, model: ctx.opts.model, timeoutMs: ctx.opts.timeoutMs, tools: FIX_TOOLS,
+  const res = await ask(ctx, '#/$defs/fix', {
+    prompt, cwd: wt, model: ctx.opts.model, timeoutMs: ctx.opts.timeoutMs, tools: FIX_TOOLS,
   });
   if (!res.ok) {
     // No answer is not an attempt: it takes no attempt slot, and the next run tries again.
@@ -507,15 +551,15 @@ async function fixOne(f, ctx) {
   patch.declared_files = res.data.declared_files;
   patch.enforcement_note = res.data.enforcement_note;
   patch.verification = await verifyPatch(f, patch, ctx);
-  patch.typed_failures = evaluateVerification(patch.verification, VERIFY_LEVELS[ctx.opts.verify], f.triage.contract.witness.tier)
+  patch.typed_failures = evaluateVerification(patch.verification, VERIFY_LEVELS[ctx.opts.verify], contractOf(f).witness.tier)
     .failed.map((o) => ({ obligation: o, reason: patch.verification?.[o]?.reason || 'failed' }));
 }
 
-async function fixAll(findings, ctx) {
+async function fixAll(findings: FindingRecord[], ctx: FixCtx) {
   const level = ctx.opts.verify;
   const fixable = findings.filter((f) => stageOf(f, level) === 'fix');
   let attempted = 0;
-  const failed = [];
+  const failed: AgentFailure[] = [];
   for (const f of order(fixable)) {
     // Two attempts, and the cap is in the schema as well as here. Only a patch that failed its
     // checks earns a retry; every other outcome is final, as dispositionFor records it.
@@ -535,16 +579,16 @@ async function fixAll(findings, ctx) {
 // Cheapest first, short-circuit on the first failure, except the audit which always runs so
 // attempt two gets a real explanation. An obligation outside the required set is never written,
 // so evaluateVerification reports it as skipped rather than as anything that passed.
-async function verifyPatch(f, patch, ctx) {
+async function verifyPatch(f: FindingRecord, patch: Patch, ctx: FixCtx): Promise<Verification> {
   const required = new Set(VERIFY_LEVELS[ctx.opts.verify]);
   const v: Verification = {};
-  const contract = f.triage.contract;
+  const contract = contractOf(f);
   const wt = patch.worktree;
   const tier = contract.witness.tier;
-  const need = (name) => required.has(name);
+  const need = (name: Obligation) => required.has(name);
   // `holds`, not `=== 'pass'`: an excused unavailable (the argued pair, or a red suite on base)
   // must not stop the run, exactly like a pass.
-  const holds = (name) => v[name].status === 'pass' || (v[name].status === 'unavailable' && excused(name, tier));
+  const holds = (name: Obligation) => v[name]?.status === 'pass' || (v[name]?.status === 'unavailable' && excused(name, tier));
   let stopped = false;
 
   if (need('frozen_target')) {
@@ -554,7 +598,7 @@ async function verifyPatch(f, patch, ctx) {
     stopped = !same;
   }
 
-  const diff = collectDiff(wt, ctx.base, patch.declared_files, ctx);
+  const diff = collectDiff(wt, ctx.base, patch.declared_files || [], ctx);
   if (!stopped && need('deterministic_guard')) {
     if (!diff.trim()) {
       v.deterministic_guard = { status: 'fail', reason: 'no_diff' };
@@ -614,23 +658,23 @@ async function verifyPatch(f, patch, ctx) {
   return v;
 }
 
-function baseTree(ctx) {
-  if (ctx._baseTree) return ctx._baseTree;
+function baseTree(ctx: FixCtx): string | null {
+  if (ctx.baseTree) return ctx.baseTree;
   const wt = path.join(ctx.worktreeRoot, 'base');
   if (!fs.existsSync(wt)) {
     const r = ctx.git(['worktree', 'add', '--detach', wt, ctx.base]);
     if (r.status !== 0) return null;
   }
-  ctx._baseTree = wt;
+  ctx.baseTree = wt;
   return wt;
 }
 
-function runCommand(cmd, cwd, ctx) {
+function runCommand(cmd: string, cwd: string, ctx: Ctx) {
   const parts = String(cmd).split(/\s+/);
   return ctx.deps.exec(parts[0], parts.slice(1), { cwd });
 }
 
-function runRegressionSuite(patch, ctx): ObligationResult {
+function runRegressionSuite(patch: Patch, ctx: FixCtx): ObligationResult {
   if (!ctx.testCommand) return { status: 'unavailable', reason: 'no_test_command_discovered' };
   const base = baseTree(ctx);
   if (base && runCommand(ctx.testCommand, base, ctx).status !== 0) {
@@ -641,19 +685,20 @@ function runRegressionSuite(patch, ctx): ObligationResult {
   return r.status === 0 ? { status: 'pass' } : { status: 'fail', reason: trim(r.stdout + r.stderr) };
 }
 
-async function runDifferentialWitness(contract, patch, ctx): Promise<{ differential_witness: ObligationResult; functional_control?: ObligationResult }> {
+async function runDifferentialWitness(contract: SecurityContract, patch: Patch, ctx: FixCtx): Promise<{ differential_witness: ObligationResult; functional_control?: ObligationResult }> {
   const w = contract.witness;
   try {
     return await witnessObligations(w,
       { baseDir: w.tier === 'dynamic' ? baseTree(ctx) : null, headDir: patch.worktree, harnesses: ctx.appHarness },
       { allowDynamic: ctx.opts.witness === 'dynamic' });
   } catch (e) {
-    return { differential_witness: { status: 'unavailable', reason: `witness_error:${trim(e.message)}` } };
+    return { differential_witness: { status: 'unavailable', reason: `witness_error:${trim(e instanceof Error ? e.message : e)}` } };
   }
 }
 
-function runFunctionalControl(contract, patch, ctx): ObligationResult {
-  const c = contract.witness.control;
+function runFunctionalControl(contract: SecurityContract, patch: Patch, ctx: FixCtx): ObligationResult {
+  const w = contract.witness;
+  const c = 'control' in w ? w.control : null;
   if (!c || c.kind === 'unavailable') {
     return { status: 'unavailable', reason: (c && c.why) || 'no_control_authored' };
   }
@@ -669,8 +714,8 @@ function runFunctionalControl(contract, patch, ctx): ObligationResult {
   return { status: 'unavailable', reason: 'http_control_needs_the_dynamic_tier' };
 }
 
-function buildAuditPrompt(f, patch, diff) {
-  const c = f.triage.contract;
+function buildAuditPrompt(f: FindingRecord, patch: Patch, diff: string): string {
+  const c = contractOf(f);
   return [
     'Disprove the claim below. You did not triage this and you did not write this patch. You are',
     'given the frozen contract and the diff, and nothing else. Return exactly one JSON object.',
@@ -691,15 +736,14 @@ function buildAuditPrompt(f, patch, diff) {
   ].join('\n');
 }
 
-async function runAudit(f, patch, diff, ctx): Promise<ObligationResult> {
+async function runAudit(f: FindingRecord, patch: Patch, diff: string, ctx: Ctx): Promise<ObligationResult> {
   if (!patch.enforcement_note) return { status: 'fail', reason: 'no_patch_to_audit' };
   const prompt = buildAuditPrompt(f, patch, diff);
   // The auditor may name the rule in its own reasoning, but it must not be handed one.
   const leak = leakError(prompt, f);
   if (leak) return { status: 'fail', reason: `auditor_prompt_leak: ${leak}` };
-  const res = await ctx.deps.runAgent({
-    prompt, schemaPath: AGENT_SCHEMA, schemaPointer: '#/$defs/audit',
-    cwd: patch.worktree, model: ctx.opts.model, timeoutMs: ctx.opts.timeoutMs,
+  const res = await ask(ctx, '#/$defs/audit', {
+    prompt, cwd: patch.worktree, model: ctx.opts.model, timeoutMs: ctx.opts.timeoutMs,
     tools: AUDIT_TOOLS,
   });
   if (!res.ok) return { status: 'fail', reason: `audit_agent_failed:${res.reason}` };
@@ -711,19 +755,20 @@ async function runAudit(f, patch, diff, ctx): Promise<ObligationResult> {
 
 // ----------------------------------------------------------------- 8. report
 
-function dispositionFor(f, level) {
-  if (!f.triage) return null;
+function dispositionFor(f: FindingRecord, level: VerifyLevel): Disposition | null {
+  const t = f.triage;
+  if (!t) return null;
   if (!f.gate) return null;
+  // gate() reports every verdict but an exploitable one at or above the threshold, so the
+  // verdict alone says which report-only outcome this is.
   if (f.gate.action === 'report_only') {
-    switch (f.gate.reason) {
+    switch (t.verdict) {
       case 'not_exploitable':
-        return { state: 'rejected', reason: f.triage.refutation.reason,
-          policy: f.triage.established_by === 'deterministic_prepass' };
+        return { state: 'rejected', reason: t.refutation.reason, policy: t.established_by === 'deterministic_prepass' };
       case 'undecidable':
-        return { state: 'undecidable', missing_fact: f.triage.blocker.missing_fact,
-          resolve_by: f.triage.blocker.resolve_by };
-      default:
-        return { state: 'below_threshold', severity: f.triage.severity, threshold: f.gate.threshold };
+        return { state: 'undecidable', missing_fact: t.blocker.missing_fact, resolve_by: t.blocker.resolve_by };
+      case 'exploitable':
+        return { state: 'below_threshold', severity: t.severity, threshold: f.gate.threshold };
     }
   }
   const last = f.patches[f.patches.length - 1];
@@ -731,7 +776,7 @@ function dispositionFor(f, level) {
   if (last.outcome === 'cannot_fix') return { state: 'fix_declined', reason: last.reason, branch: last.branch };
   // `error` means the worktree or the harness commit failed, so the branch carries no fix.
   const branch = last.outcome === 'error' ? null : last.branch;
-  const tier = f.triage.contract.witness.tier;
+  const tier = contractOf(f).witness.tier;
   // Only a patch is judged. A crash, a refusal or a failed worktree is a failed fix at every level,
   // including `none`, where an empty verification would otherwise count as verified.
   const ev = last.outcome === 'patched'
@@ -742,13 +787,13 @@ function dispositionFor(f, level) {
       detail: last.detail, failed: ev.failed, missing: ev.missing, worktree: last.worktree };
   }
   return {
-    state: tier === 'argued' ? 'fixed_unwitnessed' : 'fixed',
+    state: tier === 'argued' ? 'fixed_unwitnessed' as const : 'fixed' as const,
     branch: last.branch, verify_level: level, skipped_obligations: ev.skipped,
     unavailable: ev.unavailable, witness_tier: tier,
   };
 }
 
-function finalize(findings, level, ctx, open = new Set()) {
+function finalize(findings: FindingRecord[], level: VerifyLevel, ctx: Pick<Ctx, 'save'>, open = new Set<string>()): void {
   for (const f of findings) {
     if (f.disposition || open.has(f.id)) continue;
     const d = dispositionFor(f, level);
@@ -758,13 +803,13 @@ function finalize(findings, level, ctx, open = new Set()) {
 
 // ------------------------------------------------------------------- the run
 
-function makeSaver(outDir) {
+function makeSaver(outDir: string) {
   const dir = path.join(outDir, 'findings');
   ensureDir(dir);
-  return (f) => writeJson(path.join(dir, `${f.id}.json`), f);
+  return (f: FindingRecord) => writeJson(path.join(dir, `${f.id}.json`), f);
 }
 
-function planLines(opts, target, outDir, base) {
+function planLines(opts: Opts, target: string, outDir: string, base: string | null): string[] {
   return [
     `target        ${target}`,
     `out           ${outDir}`,
@@ -782,17 +827,21 @@ function planLines(opts, target, outDir, base) {
   ];
 }
 
-async function run(opts, deps = realDeps()) {
+type RunResult =
+  | { dryRun: true; outDir: string; target: string; base: string | null }
+  | { dryRun?: false; findings: FindingRecord[]; meta: RunMeta; outDir: string; runId: string };
+
+async function run(opts: Opts, deps: Deps = realDeps()): Promise<RunResult> {
   const target = path.resolve(opts.target);
   if (!fs.existsSync(target)) throw new UsageError(`--target does not exist: ${target}`);
-  const git = (args, cwd = target) => deps.exec('git', ['-C', cwd, ...args]);
+  const git: Git = (args, cwd = target) => deps.exec('git', ['-C', cwd, ...args]);
   const head = git(['rev-parse', 'HEAD']);
   const base = head.status === 0 ? head.stdout.trim() : null;
   const outDir = path.resolve(opts.out || defaultOutDir(target, base));
 
   if (opts.dryRun) {
     for (const l of planLines(opts, target, outDir, base)) console.log(l);
-    return { dryRun: true, outDir, target, base };
+    return { dryRun: true as const, outDir, target, base };
   }
 
   ensureDir(outDir);
@@ -815,7 +864,7 @@ async function run(opts, deps = realDeps()) {
   if (!recorded.level || !recorded.scanConfig) {
     writeJson(metaFile, { run_id: runId, verify_level: opts.verify, scan_config: opts.scanConfig, base_commit: base });
   }
-  const policy = { fix_at: opts.fixAt };
+  const policy: Policy = { fix_at: opts.fixAt };
   const startedAt = deps.now();
 
   // 1. scan
@@ -832,14 +881,14 @@ async function run(opts, deps = realDeps()) {
   const resumed = mergeExisting(findings, outDir);
 
   const testCommand = discoverTestCommand(target);
-  let appHarness = [];
+  let appHarness: AppHarness[] = [];
   try { appHarness = discoverAppHarness(target); } catch { /* an unreadable tree has no harness */ }
   const dynamicOffered = opts.witness === 'dynamic' && appHarness.length > 0;
   if (opts.witness === 'dynamic' && !dynamicOffered) {
     deps.log('--witness=dynamic: no app harness discovered, so triage is offered argued only');
   }
 
-  const ctx = {
+  const ctx: Ctx = {
     opts, deps, target, outDir, runId, worktreeRoot, git, base, save, testCommand, appHarness,
     buildCommand: null, lintCommand: null,
     witnessTiers: dynamicOffered ? ['dynamic', 'argued'] : ['argued'],
@@ -857,15 +906,15 @@ async function run(opts, deps = realDeps()) {
   const gated = gateAll(findings, policy, ctx);
 
   // 6 and 7. fix and verify
-  let fixSummary = { attempted: 0, failed: [] };
-  let degraded = null;
+  let fixSummary: { attempted: number; failed: AgentFailure[] } = { attempted: 0, failed: [] };
+  let degraded: string | null = null;
   const wantsFix = findings.some((f) => stageOf(f, opts.verify) === 'fix');
   if (opts.triageOnly) {
     degraded = wantsFix ? 'triage_only' : null;
   } else if (!base) {
     degraded = wantsFix ? 'target_is_not_a_git_repository' : null;
   } else {
-    fixSummary = await fixAll(findings, ctx);
+    fixSummary = await fixAll(findings, { ...ctx, base });
   }
 
   // 8. report
@@ -876,7 +925,7 @@ async function run(opts, deps = realDeps()) {
   const why = incompleteReason({ degraded, unresolved: unresolved.length, budget: opts.maxFindings,
     deferred: tr.deferred.length, failures });
 
-  const meta = {
+  const meta: RunMeta = {
     run_id: runId, target, base_commit: base, policy,
     verify_level: opts.verify,
     verify_obligations: VERIFY_LEVELS[opts.verify],
@@ -902,8 +951,8 @@ async function run(opts, deps = realDeps()) {
   return { findings, meta, outDir, runId };
 }
 
-async function main(argv) {
-  let opts;
+async function main(argv: string[]): Promise<number> {
+  let opts: Opts;
   try { opts = parseArgs(argv); }
   catch (e) {
     if (!(e instanceof UsageError)) throw e;
@@ -912,12 +961,12 @@ async function main(argv) {
   }
   try { await run(opts); return 0; }
   catch (e) {
-    console.error(`run failed: ${e.message}`);
+    console.error(`run failed: ${e instanceof Error ? e.message : String(e)}`);
     return 1;
   }
 }
 
-export type { RunMeta };
+export type { RunMeta, Opts, Deps, Ctx, RunResult };
 export {
   bundleDef,
   leakError,
