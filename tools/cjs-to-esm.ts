@@ -17,8 +17,10 @@ const args = process.argv.slice(2);
 const useGit = !args.includes('--no-git');
 const files = args.filter((a) => a !== '--no-git').map((f) => path.resolve(f));
 
+// A target still waiting its turn keeps its .cjs name until its own conversion rewrites it.
 function spec(fromFile: string, target: string): string {
-  const rel = path.relative(path.dirname(fromFile), target.replace(/\.cjs$/, '.ts'));
+  const converted = !fs.existsSync(target) || files.includes(target);
+  const rel = path.relative(path.dirname(fromFile), converted ? target.replace(/\.cjs$/, '.ts') : target);
   return rel.startsWith('.') ? rel : `./${rel}`;
 }
 
@@ -44,11 +46,13 @@ function convert(file: string, text: string): { text: string; leftovers: string[
     }
     l = l.replace(/^if \(require\.main === module\)/, 'if (import.meta.main)');
     l = l.replace(/\b__dirname\b/g, 'import.meta.dirname');
-    if (/\brequire\(|\bmodule\.exports\b|\b__filename\b/.test(l) && !/^module\.exports = /.test(l)) {
+    const nestedBuiltin = /^\s+const (\w+|\{[^}]+\}) = require\('[^./][^']*'\);$/.test(l);
+    if (/\brequire\(|\bmodule\.exports\b|\b__filename\b/.test(l) && !/^module\.exports = /.test(l) && !nestedBuiltin) {
       leftovers.push(`${path.relative(REPO, file)}:${i + 1}: ${l.trim()}`);
     }
     out.push(l);
   }
+  hoistNested(out);
   let result = out.join('\n');
   result = result.replace(/^module\.exports = \{([\s\S]*?)\};$/m, (whole, body: string) => {
     if (/:/.test(body.replace(/\/\/.*$/gm, ''))) {
@@ -58,6 +62,27 @@ function convert(file: string, text: string): { text: string; leftovers: string[
     return `export {${body}};`;
   });
   return { text: result, leftovers };
+}
+
+// A builtin required inside a block (usually the CLI entry) becomes a top-level import.
+function hoistNested(lines: string[]): void {
+  const hoisted: string[] = [];
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const m = /^\s+const (\w+|\{[^}]+\}) = require\('([^./][^']*)'\);$/.exec(lines[i]);
+    if (!m) continue;
+    const line = `import ${m[1]} from '${m[2]}';`;
+    if (!lines.includes(line) && !hoisted.includes(line)) hoisted.unshift(line);
+    lines.splice(i, 1);
+  }
+  if (!hoisted.length) return;
+  let at = 0;
+  while (at < lines.length && /^(#!|\/\/)/.test(lines[at])) at++;
+  let lastImport = -1;
+  for (let j = at; j < lines.length && /^(import |\s*$)/.test(lines[j]); j++) {
+    if (lines[j].startsWith('import ')) lastImport = j;
+  }
+  if (lastImport >= 0) lines.splice(lastImport + 1, 0, ...hoisted);
+  else lines.splice(at, 0, '', ...hoisted);
 }
 
 function importLine(binding: string, from: string): string {
