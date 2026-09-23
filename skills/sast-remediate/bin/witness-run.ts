@@ -10,24 +10,51 @@ import http from 'http';
 import { boot } from './app-harness.ts';
 import type { HttpResult } from './app-harness.ts';
 import type { ObligationResult } from './stage.ts';
+import type { AppHarness, Booted } from './app-harness.ts';
+import type { HttpExchange, Observable, Witness } from '../schema/types.ts';
+
+type Response = HttpResult & { ms: number };
+type Trees = { base: { baseUrl: string }; head: { baseUrl: string } };
+type Probe = { ran: boolean; signal: boolean; detail: string };
+type ControlResult = { ran: true; passed_pre: boolean; passed_post: boolean; detail: string } | { ran: false; why: string };
+type WitnessFailure = 'witness_red' | 'witness_control_failed' | 'witness_vacuous';
+type WitnessResult = {
+  tier: 'dynamic' | 'argued'; pre: Probe; post: Probe; control: ControlResult; differential_ok: boolean; control_ok: boolean;
+};
+type TranscriptEntry = {
+  label: string; tree: keyof Trees; method: string; path: string; query: unknown;
+  status: number; ms: number; headers: Record<string, unknown>; body_len: number;
+};
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+// The schema leaves the body shape open, so each kind's value is checked here before it is sent.
+function bodyText(body: Record<string, unknown> | undefined): string | null {
+  switch (body?.kind) {
+    case 'json': return JSON.stringify(body.value);
+    case 'raw': return String(body.value);
+    case 'form': return isRecord(body.value)
+      ? new URLSearchParams(Object.entries(body.value).map(([k, v]) => [k, String(v)])).toString()
+      : '';
+    default: return null;
+  }
+}
 
 const REDACT_ALLOW = new Set(['content-type', 'content-length', 'location', 'x-request-id']);
 
-function request(baseUrl, ex, timeoutMs = 8000): Promise<HttpResult & { ms: number }> {
+function request(baseUrl: string, ex: HttpExchange, timeoutMs = 8000): Promise<Response> {
   return new Promise((resolve) => {
     const u = new URL(ex.path, baseUrl);
     for (const [k, v] of Object.entries(ex.query || {})) u.searchParams.set(k, String(v));
-    const bodyText = ex.body && ex.body.kind === 'json' ? JSON.stringify(ex.body.value)
-      : ex.body && ex.body.kind === 'raw' ? ex.body.value
-      : ex.body && ex.body.kind === 'form' ? new URLSearchParams(ex.body.value).toString()
-      : null;
-    const headers = { ...(ex.headers || {}) };
-    if (bodyText !== null) {
-      headers['content-length'] = Buffer.byteLength(bodyText);
+    const text = bodyText(ex.body);
+    const headers: Record<string, string | number> = Object.fromEntries(
+      Object.entries(ex.headers || {}).map(([k, v]) => [k, String(v)]));
+    if (text !== null) {
+      headers['content-length'] = Buffer.byteLength(text);
       if (!headers['content-type']) {
         headers['content-type'] = ex.body.kind === 'json' ? 'application/json'
           : ex.body.kind === 'form' ? 'application/x-www-form-urlencoded'
-          : ex.body.content_type || 'text/plain';
+          : String(ex.body.content_type || 'text/plain');
       }
     }
     const started = Date.now();
@@ -39,23 +66,23 @@ function request(baseUrl, ex, timeoutMs = 8000): Promise<HttpResult & { ms: numb
         let body = '';
         res.on('data', (c) => { body += c; });
         res.on('end', () => resolve({
-          status: res.statusCode, headers: res.headers, body, ms: Date.now() - started,
+          status: res.statusCode ?? 0, headers: res.headers, body, ms: Date.now() - started,
         }));
       });
     req.on('error', (e: NodeJS.ErrnoException) => resolve({ status: 0, headers: {}, body: '', ms: Date.now() - started, error: e.code }));
     req.setTimeout(timeoutMs, () => { req.destroy(); resolve({ status: 0, headers: {}, body: '', ms: timeoutMs, error: 'timeout' }); });
-    if (bodyText !== null) req.write(bodyText);
+    if (text !== null) req.write(text);
     req.end();
   });
 }
 
-function jsonPath(obj, p) {
+function jsonPath(obj: unknown, p: string): unknown {
   return p.replace(/^\$\.?/, '').split('.').filter(Boolean)
-    .reduce((o, k) => (o == null ? o : o[/^\d+$/.test(k) ? Number(k) : k]), obj);
+    .reduce<unknown>((o, k) => (o == null ? o : (o as Record<string, unknown>)[k]), obj);
 }
 
 // Returns true when the observable FIRED, meaning the attack worked.
-function observed(obs, res) {
+function observed(obs: Observable, res: Response): boolean {
   switch (obs.kind) {
     case 'status_code': return res.status === obs.equals;
     case 'body_contains': return res.body.includes(obs.canary);
@@ -67,19 +94,22 @@ function observed(obs, res) {
       catch { return false; }
     }
     case 'row_appears': throw new Error('row_appears requires a fixture database adapter');
-    default: throw new Error(`unknown observable: ${obs.kind}`);
+    default: {
+      const unknown: never = obs;
+      throw new Error(`unknown observable: ${(unknown as { kind: unknown }).kind}`);
+    }
   }
 }
 
-const redact = (h) => Object.fromEntries(
+const redact = (h: Record<string, unknown>) => Object.fromEntries(
   Object.entries(h).map(([k, v]) => [k, REDACT_ALLOW.has(k.toLowerCase()) ? v : '<redacted>']));
 
-const describe = (res) => res.error
+const describe = (res: Response) => res.error
   ? `transport ${res.error}`
   : `status ${res.status}, ${res.body.length}B, ${res.ms}ms`;
 
-async function runDynamic(w, trees, transcript) {
-  const step = async (label, tree, ex) => {
+async function runDynamic(w: Extract<Witness, { tier: 'dynamic' }>, trees: Trees, transcript: TranscriptEntry[]): Promise<WitnessResult> {
+  const step = async (label: string, tree: keyof Trees, ex: HttpExchange) => {
     const res = await request(trees[tree].baseUrl, ex);
     transcript.push({ label, tree, method: ex.method, path: ex.path, query: ex.query,
       status: res.status, ms: res.ms, headers: redact(res.headers), body_len: res.body.length });
@@ -124,7 +154,7 @@ async function runDynamic(w, trees, transcript) {
 }
 
 // Maps a result to the obligation it failed, so the caller never has to re-derive it.
-function classify(r) {
+function classify(r: WitnessResult): WitnessFailure | null {
   if (!r.control.ran) return r.differential_ok ? null : 'witness_red';
   if (!r.control.passed_pre) return 'witness_control_failed';
   if (!r.pre.signal) return 'witness_vacuous';
@@ -135,16 +165,16 @@ function classify(r) {
 
 // The dynamic tier is opt-in. The caller passes { allowDynamic: true } only when the operator
 // asked for it, so a repository that happens to have a bootable app is never driven by default.
-async function runWitness(w, trees, opts: { allowDynamic?: boolean } = {}) {
+async function runWitness(w: Witness, trees: Trees, opts: { allowDynamic?: boolean } = {}) {
   if (w.tier === 'dynamic' && !opts.allowDynamic) {
     throw new Error('dynamic witness tier is opt-in; pass --witness=dynamic (see design/FUTURE-IMPROVEMENTS.md)');
   }
   return runWitnessInner(w, trees);
 }
 
-async function runWitnessInner(w, trees) {
-  const transcript = [];
-  let result;
+async function runWitnessInner(w: Witness, trees: Trees) {
+  const transcript: TranscriptEntry[] = [];
+  let result: WitnessResult;
   switch (w.tier) {
     case 'dynamic': result = await runDynamic(w, trees, transcript); break;
     case 'argued':
@@ -176,7 +206,11 @@ const unavailable = (reason: string): ObligationResult => ({ status: 'unavailabl
 // docs/plans/R5-verify-full.md section 3 in order.
 type WitnessObligations = { differential_witness: ObligationResult; functional_control?: ObligationResult };
 
-async function witnessObligations(w, { baseDir, headDir, harnesses }, { allowDynamic = false } = {}): Promise<WitnessObligations> {
+async function witnessObligations(
+  w: Witness,
+  { baseDir, headDir, harnesses }: { baseDir: string | null; headDir: string; harnesses: AppHarness[] },
+  { allowDynamic = false } = {},
+): Promise<WitnessObligations> {
   if (w.tier === 'argued') {
     return {
       differential_witness: unavailable(`argued_tier:${w.obstacle}`),
@@ -199,7 +233,7 @@ async function witnessObligations(w, { baseDir, headDir, harnesses }, { allowDyn
 
   // boot() returns a no-op kill on failure, so calling it unconditionally in the finally is safe.
   const b = await boot(harness, baseDir, { port: await freePort() });
-  let h = null;
+  let h: Booted | null = null;
   try {
     if (!b.ok) return { differential_witness: unavailable(`base_did_not_boot:${b.why}`) };
 
@@ -214,9 +248,9 @@ async function witnessObligations(w, { baseDir, headDir, harnesses }, { allowDyn
       differential_witness: r.differential_ok
         ? { status: 'pass', detail: r.post.detail, transcript: r.transcript }
         : { status: 'fail', reason: r.failure || 'witness_not_differential', transcript: r.transcript },
-      functional_control: r.control_ok
+      functional_control: r.control_ok && r.control.ran
         ? { status: 'pass', detail: r.control.detail }
-        : { status: 'fail', reason: r.control.passed_pre === false ? 'control_failed_on_base' : 'control_failed_on_patched_tree' },
+        : { status: 'fail', reason: r.control.ran && !r.control.passed_pre ? 'control_failed_on_base' : 'control_failed_on_patched_tree' },
     };
   } finally {
     b.kill();

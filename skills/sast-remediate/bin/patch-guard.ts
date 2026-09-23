@@ -4,6 +4,7 @@
 // laziest ways to make a finding disappear for free, before a single token is spent.
 
 import fs from 'fs';
+import type { SecurityContract } from '../schema/types.ts';
 
 const SUPPRESSION = /\b(nosemgrep|nosem|noqa|NOSONAR|nosec|eslint-disable(?:-next-line|-line)?|@SuppressWarnings|pylint:\s*disable|type:\s*ignore)\b|\b(?:codeql|lgtm)\s*\[/;
 
@@ -31,11 +32,13 @@ const ENFORCE_HINT = /\b(validate|valid|sanitiz|escape|allowlist|whitelist|allow
 
 // Only these tiers ask the fixer to commit a witness file. A dynamic witness is an HTTP
 // exchange stored in the contract, not a file, so it has nothing here to be missing.
-const WITNESS_FILE_TIERS = new Set(['executable', 'structural']);
+const WITNESS_FILE_TIERS = new Set<string>(['executable', 'structural']);
 
-function parseDiff(text) {
-  const files = [];
-  let cur = null;
+type DiffFile = { path: string; added: string[]; removed: string[] };
+
+function parseDiff(text: string): DiffFile[] {
+  const files: DiffFile[] = [];
+  let cur: DiffFile | null = null;
   for (const line of text.split('\n')) {
     const m = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
     if (m) { cur = { path: m[2], added: [], removed: [] }; files.push(cur); continue; }
@@ -47,22 +50,22 @@ function parseDiff(text) {
   return files;
 }
 
-const matchesAny = (p, res) => res.some((re) => re.test(p));
+const matchesAny = (p: string, res: RegExp[]) => res.some((re) => re.test(p));
 
 // Glob subset: ** any depth, * within a segment, no braces. Enough for writable_scope.
-function globToRe(g) {
+function globToRe(g: string): RegExp {
   const esc = g.replace(/[.+^${}()|[\]\\]/g, '\\$&');
   return new RegExp('^' + esc.replace(/\*\*\//g, '\u0000').replace(/\*\*/g, '\u0001')
     .replace(/\*/g, '[^/]*').replace(/\u0000/g, '(?:.*/)?').replace(/\u0001/g, '.*') + '$');
 }
-const inScope = (p, globs) => globs.some((g) => globToRe(g).test(p));
+const inScope = (p: string, globs: string[]) => globs.some((g) => globToRe(g).test(p));
 
 // Token-TYPE sequence comparison. Identical sequences prove a rename, relabel or reformat.
 // Known blind spot, stated rather than hidden: a real-shaped but behaviourally no-op call
 // changes the type sequence and is NOT caught here. The differential witness catches that,
 // because it exercises behaviour instead of shape.
-function tokenTypes(src) {
-  const out = [];
+function tokenTypes(src: string): string[] {
+  const out: string[] = [];
   const re = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/|#[^\n]*)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|(\b\d+(?:\.\d+)?\b)|([A-Za-z_$][\w$]*)|([{}()[\];,.]|[+\-*/%=<>!&|^~?:]+)|(\s+)/g;
   let m;
   while ((m = re.exec(src)) !== null) {
@@ -75,19 +78,25 @@ function tokenTypes(src) {
   return out;
 }
 
-const sameShape = (a, b) => {
+const sameShape = (a: string, b: string) => {
   const x = tokenTypes(a), y = tokenTypes(b);
   return x.length === y.length && x.every((t, i) => t === y[i]);
 };
 
-const ADVISORY = new Set(['sink_deleted_without_enforcement']);
+type ViolationKind =
+  | 'suppression_comment_added' | 'test_skipped' | 'existing_test_weakened' | 'scanner_config_modified'
+  | 'ignore_file_modified' | 'app_harness_modified' | 'dependency_manifest_modified'
+  | 'outside_writable_scope' | 'cosmetic_change_only' | 'sink_deleted_without_enforcement' | 'witness_missing';
+type Violation = { kind: ViolationKind; [detail: string]: unknown };
+
+const ADVISORY = new Set<ViolationKind>(['sink_deleted_without_enforcement']);
 
 type GuardOpts = { sinkFiles?: string[]; sinkText?: string; requireWitnessFile?: boolean };
 
-function guardDiff(diffText, contract, opts: GuardOpts = {}) {
-  const violations = [];
+function guardDiff(diffText: string, contract: SecurityContract | null, opts: GuardOpts = {}) {
+  const violations: Violation[] = [];
   const files = parseDiff(diffText);
-  const add = (kind, extra) => violations.push({ kind, ...extra });
+  const add = (kind: ViolationKind, extra: Record<string, unknown>) => violations.push({ kind, ...extra });
 
   const touched = files.map((f) => f.path);
   const scope = (contract && contract.writable_scope) || [];
@@ -115,7 +124,7 @@ function guardDiff(diffText, contract, opts: GuardOpts = {}) {
     }
   }
 
-  const hit = (res) => touched.filter((p) => matchesAny(p, res));
+  const hit = (res: RegExp[]) => touched.filter((p) => matchesAny(p, res));
   if (hit(SCANNER_CONFIG).length) add('scanner_config_modified', { files: hit(SCANNER_CONFIG) });
   if (hit(IGNORE_FILES).length) add('ignore_file_modified', { files: hit(IGNORE_FILES) });
   if (hit(HARNESS_FILES).length) add('app_harness_modified', { files: hit(HARNESS_FILES) });
@@ -141,7 +150,8 @@ function guardDiff(diffText, contract, opts: GuardOpts = {}) {
   // auditor is the real check for this one.
   for (const f of files) {
     if (sinkFiles.size && !sinkFiles.has(f.path)) continue;
-    const removedSink = opts.sinkText && f.removed.some((l) => l.includes(opts.sinkText));
+    const { sinkText } = opts;
+    const removedSink = sinkText && f.removed.some((l) => l.includes(sinkText));
     if (removedSink && !f.added.some((l) => ENFORCE_HINT.test(l))) {
       add('sink_deleted_without_enforcement', {
         detail: `${f.path}: the sink line was removed and no validation construct was added`,
@@ -149,8 +159,8 @@ function guardDiff(diffText, contract, opts: GuardOpts = {}) {
     }
   }
 
-  const tier = contract && contract.witness && contract.witness.tier;
-  if (WITNESS_FILE_TIERS.has(tier) && opts.requireWitnessFile !== false) {
+  const tier = contract?.witness?.tier;
+  if (tier && WITNESS_FILE_TIERS.has(tier) && opts.requireWitnessFile !== false) {
     if (!touched.some((p) => TEST_PATH.test(p) || /\.(ya?ml)$/.test(p))) {
       add('witness_missing', { expected_tier: tier });
     }
@@ -166,6 +176,7 @@ function guardDiff(diffText, contract, opts: GuardOpts = {}) {
   return { passed: blocking.length === 0, violations: blocking, advisory };
 }
 
+export type { Violation, ViolationKind, DiffFile };
 export { guardDiff, ADVISORY, parseDiff, tokenTypes, sameShape, globToRe, inScope };
 
 if (import.meta.main) {

@@ -8,16 +8,25 @@ import path from 'path';
 import http from 'http';
 import { spawn } from 'child_process';
 
-const exists = (root, rel) => fs.existsSync(path.join(root, rel));
-const readJson = (root, rel) => {
+type ReadyProbe = { probe_path: string; expect_status: number; timeout_s: number };
+type AppHarness = {
+  id: string; kind: string; up: string[]; ready: ReadyProbe; base_url: null; down: string[]; reset: null;
+  fixtures: { seed: null; dummy_principals: string[] }; boot_s_observed: null;
+};
+type Booted =
+  | { ok: true; baseUrl: string; log: string; kill: () => void }
+  | { ok: false; why: string; log: string; kill: () => void };
+
+const exists = (root: string, rel: string) => fs.existsSync(path.join(root, rel));
+const readJson = (root: string, rel: string) => {
   try { return JSON.parse(fs.readFileSync(path.join(root, rel), 'utf8')); } catch { return null; }
 };
 
 // Readiness: prefer a real health route, else expect anything below 500 from the root.
-function readyProbe(root) {
+function readyProbe(root: string): ReadyProbe {
   const hints = ['/healthz', '/health', '/_health', '/ping', '/readyz'];
   let text = '';
-  const walk = (d, depth) => {
+  const walk = (d: string, depth: number) => {
     if (depth > 3) return;
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
       if (e.name === 'node_modules' || e.name.startsWith('.')) continue;
@@ -33,10 +42,10 @@ function readyProbe(root) {
   return { probe_path: '/', expect_status: 0, timeout_s: 30 }; // 0 means "anything under 500"
 }
 
-function discoverAppHarness(root) {
-  const out = [];
+function discoverAppHarness(root: string): AppHarness[] {
+  const out: AppHarness[] = [];
   const ready = readyProbe(root);
-  const mk = (id, kind, up, extra = {}) => ({
+  const mk = (id: string, kind: string, up: string[], extra = {}): AppHarness => ({
     id, kind, up, ready, base_url: null, down: [], reset: null,
     fixtures: { seed: null, dummy_principals: ['dummy_user'] },
     boot_s_observed: null, ...extra,
@@ -77,7 +86,7 @@ function discoverAppHarness(root) {
 
 type HttpResult = { status: number; headers: http.IncomingHttpHeaders; body: string; error?: string };
 
-function get(baseUrl, p, headers = {}, timeoutMs = 5000): Promise<HttpResult> {
+function get(baseUrl: string, p: string, headers = {}, timeoutMs = 5000): Promise<HttpResult> {
   return new Promise((resolve) => {
     const u = new URL(p, baseUrl);
     const req = http.request(
@@ -85,7 +94,7 @@ function get(baseUrl, p, headers = {}, timeoutMs = 5000): Promise<HttpResult> {
       (res) => {
         let body = '';
         res.on('data', (c) => { body += c; });
-        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }));
       });
     req.on('error', (e: NodeJS.ErrnoException) => resolve({ status: 0, headers: {}, body: '', error: e.code }));
     req.setTimeout(timeoutMs, () => { req.destroy(); resolve({ status: 0, headers: {}, body: '', error: 'timeout' }); });
@@ -93,11 +102,11 @@ function get(baseUrl, p, headers = {}, timeoutMs = 5000): Promise<HttpResult> {
   });
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // The sandbox lives here. Empty allowlisted environment, loopback only, ephemeral port, no
 // network, hard wall clock. If a control cannot be applied the caller must not run this tier.
-async function boot(harness, cwd, { port, limitsS = 120 }: { port: number; limitsS?: number }) {
+async function boot(harness: AppHarness, cwd: string, { port, limitsS = 120 }: { port: number; limitsS?: number }): Promise<Booted> {
   const env = {
     PATH: process.env.PATH, HOME: path.join(cwd, '.scratch-home'),
     TMPDIR: path.join(cwd, '.scratch-tmp'), PORT: String(port), NODE_ENV: 'test',
@@ -115,7 +124,7 @@ async function boot(harness, cwd, { port, limitsS = 120 }: { port: number; limit
 
   const baseUrl = `http://127.0.0.1:${port}`;
   const deadline = Date.now() + harness.ready.timeout_s * 1000;
-  const kill = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ } };
+  const kill = () => { try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ } };
   const guard = setTimeout(kill, limitsS * 1000);
 
   while (Date.now() < deadline) {
@@ -139,7 +148,7 @@ async function boot(harness, cwd, { port, limitsS = 120 }: { port: number; limit
 }
 
 export { discoverAppHarness, boot, get };
-export type { HttpResult };
+export type { HttpResult, AppHarness, Booted, ReadyProbe };
 
 if (import.meta.main) {
   const root = process.argv[2] || '.';
