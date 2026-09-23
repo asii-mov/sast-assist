@@ -14,14 +14,17 @@ const SUPPORTED = new Set([
 
 const LIMITS = { bytes: 5 * 1024 * 1024, depth: 64, errors: 100 };
 
-function typeOf(v) {
+// A schema is our own JSON document with any keyword in it; the data is anything at all.
+type SchemaNode = Record<string, any>;
+
+function typeOf(v: unknown): string {
   if (v === null) return 'null';
   if (Array.isArray(v)) return 'array';
   if (Number.isInteger(v)) return 'integer';
   return typeof v;
 }
 
-function typeMatches(want, v) {
+function typeMatches(want: string, v: unknown): boolean {
   const t = typeOf(v);
   if (want === 'number') return t === 'number' || t === 'integer';
   return want === t;
@@ -30,17 +33,21 @@ function typeMatches(want, v) {
 // Cross-file refs keep one definition per invariant. The agent envelopes reference the
 // contract and witness shapes in finding.schema.json rather than restating them, so there is
 // no second copy to drift.
-const FILE_CACHE = new Map();
+const FILE_CACHE = new Map<string, SchemaNode>();
 
-function loadSchemaFile(file, baseDir) {
+const isRecord = (v: unknown): v is Record<string, unknown> => typeOf(v) === 'object';
+
+function loadSchemaFile(file: string, baseDir: string): SchemaNode {
   const abs = path.resolve(baseDir, file);
-  if (!FILE_CACHE.has(abs)) {
-    FILE_CACHE.set(abs, JSON.parse(fs.readFileSync(abs, 'utf8')));
+  let doc = FILE_CACHE.get(abs);
+  if (!doc) {
+    doc = JSON.parse(fs.readFileSync(abs, 'utf8')) as SchemaNode;
+    FILE_CACHE.set(abs, doc);
   }
-  return FILE_CACHE.get(abs);
+  return doc;
 }
 
-function resolve(ref, root) {
+function resolve(ref: string, root: SchemaNode): SchemaNode {
   let doc = root;
   let pointer = ref;
   const hash = ref.indexOf('#');
@@ -52,7 +59,7 @@ function resolve(ref, root) {
   } else if (!ref.startsWith('#/')) {
     throw new Error(`unsupported ref: ${ref}`);
   }
-  let node = doc;
+  let node: any = doc;
   for (const part of pointer.slice(2).split('/')) {
     node = node[part.replace(/~1/g, '/').replace(/~0/g, '~')];
     if (node === undefined) throw new Error(`unresolvable ref: ${ref}`);
@@ -62,7 +69,7 @@ function resolve(ref, root) {
 }
 
 // The `not: {pattern}` case we use is a *negative* string match. Anything else is rejected.
-function check(schema, data, root, path, errs, depth) {
+function check(schema: SchemaNode, data: unknown, root: SchemaNode, path: string, errs: string[], depth: number): void {
   if (errs.length >= LIMITS.errors) return;
   if (depth > LIMITS.depth) { errs.push(`${path}: exceeds max nesting depth`); return; }
 
@@ -81,7 +88,7 @@ function check(schema, data, root, path, errs, depth) {
 
   if (schema.type !== undefined) {
     const want = Array.isArray(schema.type) ? schema.type : [schema.type];
-    if (!want.some((w) => typeMatches(w, data))) {
+    if (!want.some((w: string) => typeMatches(w, data))) {
       errs.push(`${path}: expected ${want.join('|')}, got ${typeOf(data)}`);
       return;
     }
@@ -91,7 +98,7 @@ function check(schema, data, root, path, errs, depth) {
     errs.push(`${path}: expected const ${JSON.stringify(schema.const)}, got ${JSON.stringify(data)}`);
   }
 
-  if (schema.enum && !schema.enum.some((e) => JSON.stringify(e) === JSON.stringify(data))) {
+  if (schema.enum && !schema.enum.some((e: unknown) => JSON.stringify(e) === JSON.stringify(data))) {
     errs.push(`${path}: ${JSON.stringify(data)} not in enum`);
   }
 
@@ -102,7 +109,7 @@ function check(schema, data, root, path, errs, depth) {
   }
 
   if (schema.not) {
-    const sub = [];
+    const sub: string[] = [];
     check(schema.not, data, root, path, sub, depth + 1);
     if (sub.length === 0) {
       const why = schema.not.pattern ? ` (matched forbidden /${schema.not.pattern}/)` : '';
@@ -120,7 +127,7 @@ function check(schema, data, root, path, errs, depth) {
     errs.push(`${path}: above maximum ${schema.maximum}`);
   }
 
-  if (typeOf(data) === 'array') {
+  if (Array.isArray(data)) {
     if (schema.minItems !== undefined && data.length < schema.minItems) {
       errs.push(`${path}: needs at least ${schema.minItems} items, has ${data.length}`);
     }
@@ -128,16 +135,16 @@ function check(schema, data, root, path, errs, depth) {
       errs.push(`${path}: allows at most ${schema.maxItems} items, has ${data.length}`);
     }
     if (schema.items) {
-      data.forEach((v, i) => check(schema.items, v, root, `${path}[${i}]`, errs, depth + 1));
+      data.forEach((v: unknown, i: number) => check(schema.items, v, root, `${path}[${i}]`, errs, depth + 1));
     }
   }
 
-  if (typeOf(data) === 'object') {
+  if (isRecord(data)) {
     for (const r of schema.required || []) {
       if (!(r in data)) errs.push(`${path}: missing required property "${r}"`);
     }
     if (schema.properties) {
-      for (const [k, sub] of Object.entries(schema.properties)) {
+      for (const [k, sub] of Object.entries<SchemaNode>(schema.properties)) {
         if (k in data) check(sub, data[k], root, `${path}.${k}`, errs, depth + 1);
       }
     }
@@ -149,14 +156,14 @@ function check(schema, data, root, path, errs, depth) {
   }
 
   if (schema.oneOf) {
-    const branchErrs = schema.oneOf.map((b) => {
-      const sub = [];
+    const branchErrs: string[][] = schema.oneOf.map((b: SchemaNode) => {
+      const sub: string[] = [];
       check(b, data, root, path, sub, depth + 1);
       return sub;
     });
     const passing = branchErrs.filter((e) => e.length === 0).length;
     if (passing !== 1) {
-      const disc = typeOf(data) === 'object'
+      const disc = isRecord(data)
         ? (data.kind ?? data.verdict ?? data.tier ?? data.scanner ?? '')
         : '';
       const hint = disc ? ` (discriminator "${disc}")` : '';
@@ -171,14 +178,14 @@ function check(schema, data, root, path, errs, depth) {
   }
 }
 
-function validate(schema, data, baseDir?: string) {
-  const errs = [];
+function validate(schema: SchemaNode, data: unknown, baseDir?: string): string[] {
+  const errs: string[] = [];
   const root = baseDir ? { ...schema, __baseDir: baseDir } : schema;
   check(root, data, root, '$', errs, 0);
   return errs;
 }
 
-function main(argv) {
+function main(argv: string[]): number {
   const [schemaPath, dataPath] = argv;
   if (!schemaPath || !dataPath) {
     console.error('usage: validate.ts <schema.json> <data.json>');

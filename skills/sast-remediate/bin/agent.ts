@@ -38,7 +38,15 @@ function argvFor({ prompt, model, tools }: { prompt: string; model?: string | nu
 
 // The injectable seam. `exec(argv, {cwd, timeoutMs}) -> {code, stdout, stderr, timedOut}`.
 // Tests pass their own; nothing else in the skill spawns a model.
-type ExecResult = { code: number; stdout: string; stderr: string; timedOut: boolean };
+type ExecResult = { code: number | null; stdout: string; stderr: string; timedOut: boolean };
+type ExecFn = (argv: string[], o: { cwd?: string; timeoutMs: number }) => Promise<ExecResult>;
+type AgentOpts = {
+  prompt: string; schemaPath: string; schemaPointer: string; tools: string[];
+  cwd?: string; model?: string | null; timeoutMs?: number; exec?: ExecFn;
+};
+// `data` has passed the schema at schemaPointer; the caller knows which shape that is.
+type AgentResult = { ok: true; data: unknown } | { ok: false; reason: string; raw: string };
+type Attempt = AgentResult | { ok: false; reason: string; raw: string; spent: true };
 
 function realExec(argv: string[], { cwd, timeoutMs, command = CLI }: { cwd?: string; timeoutMs?: number; command?: string } = {}): Promise<ExecResult> {
   return new Promise((resolve) => {
@@ -50,7 +58,7 @@ function realExec(argv: string[], { cwd, timeoutMs, command = CLI }: { cwd?: str
     let timedOut = false;
     child.stdout.on('data', (d) => { stdout += d; });
     child.stderr.on('data', (d) => { stderr += d; });
-    const kill = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ } };
+    const kill = () => { try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ } };
     const guard = setTimeout(() => { timedOut = true; kill(); }, timeoutMs || DEFAULT_TIMEOUT_MS);
     child.on('error', (e) => {
       clearTimeout(guard);
@@ -65,7 +73,7 @@ function realExec(argv: string[], { cwd, timeoutMs, command = CLI }: { cwd?: str
 // Measured against claude 2.1.278, not assumed: `-p ... --output-format json` prints an ARRAY
 // of events whose last `type: "result"` element carries the answer as a string in `result`.
 // Other builds print that element by itself, so both shapes are read.
-function resultText(stdout) {
+function resultText(stdout: string): { error: string } | { text: string } {
   let envelope;
   try { envelope = JSON.parse(stdout); } catch { return { error: 'envelope is not JSON' }; }
   const events = Array.isArray(envelope) ? envelope : [envelope];
@@ -86,7 +94,7 @@ function resultText(stdout) {
 // Candidates are tried outermost first and a candidate that is not JSON is stepped past, not
 // patched: agents write `{like this}` in prose, and the brace counter cannot tell that span
 // from the answer. Stepping past is a narrower read of the text, never a repair of it.
-function extractJson(text) {
+function extractJson(text: string): unknown {
   for (let i = 0; i < text.length; i++) {
     if (text[i] !== '{') continue;
     let depth = 0;
@@ -109,18 +117,21 @@ function extractJson(text) {
 
 // ------------------------------------------------------------------ validate
 
-const SCHEMA_CACHE = new Map();
+const SCHEMA_CACHE = new Map<string, { $defs?: object }>();
 
-function schemaAt(schemaPath, pointer) {
+function schemaAt(schemaPath: string, pointer: string) {
   const abs = path.resolve(schemaPath);
-  if (!SCHEMA_CACHE.has(abs)) SCHEMA_CACHE.set(abs, JSON.parse(fs.readFileSync(abs, 'utf8')));
-  const doc = SCHEMA_CACHE.get(abs);
+  let doc = SCHEMA_CACHE.get(abs);
+  if (!doc) {
+    doc = JSON.parse(fs.readFileSync(abs, 'utf8')) as { $defs?: object };
+    SCHEMA_CACHE.set(abs, doc);
+  }
   return { root: { $ref: pointer, ...(doc.$defs ? { $defs: doc.$defs } : {}) }, dir: path.dirname(abs) };
 }
 
 // ----------------------------------------------------------------- one attempt
 
-async function attempt(opts, exec) {
+async function attempt(opts: AgentOpts, exec: ExecFn): Promise<Attempt> {
   const timeoutMs = opts.timeoutMs || DEFAULT_TIMEOUT_MS;
   const run = await exec(argvFor(opts), { cwd: opts.cwd, timeoutMs });
 
@@ -134,7 +145,7 @@ async function attempt(opts, exec) {
   }
 
   const envelope = resultText(run.stdout || '');
-  if (envelope.error) return { ok: false, reason: envelope.error, raw: run.stdout || '' };
+  if ('error' in envelope) return { ok: false, reason: envelope.error, raw: run.stdout || '' };
 
   const data = extractJson(envelope.text);
   if (data === null) return { ok: false, reason: 'no JSON object in result', raw: envelope.text };
@@ -148,7 +159,7 @@ async function attempt(opts, exec) {
   return { ok: true, data };
 }
 
-async function runAgent(opts) {
+async function runAgent(opts: AgentOpts): Promise<AgentResult> {
   if (!opts || typeof opts.prompt !== 'string' || opts.prompt.length === 0) {
     throw new Error('runAgent needs a prompt');
   }
@@ -162,7 +173,7 @@ async function runAgent(opts) {
 
   const first = await attempt(opts, exec);
   if (first.ok) return { ok: true, data: first.data };
-  if (first.spent) return { ok: false, reason: first.reason, raw: first.raw };
+  if ('spent' in first) return { ok: false, reason: first.reason, raw: first.raw };
 
   // Exactly one re-ask, with a fresh call and the same prompt. Never two.
   const second = await attempt(opts, exec);
@@ -170,6 +181,7 @@ async function runAgent(opts) {
   return { ok: false, reason: `discarded twice: ${first.reason} | ${second.reason}`, raw: second.raw };
 }
 
+export type { AgentOpts, AgentResult, ExecFn, ExecResult };
 export { runAgent, realExec, argvFor, resultText, extractJson, DEFAULT_TIMEOUT_MS };
 
 if (import.meta.main) {

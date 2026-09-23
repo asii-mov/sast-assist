@@ -8,11 +8,16 @@
 // It is not. It lets the scanner's guess cap what the fix decision can see.
 
 import fs from 'fs';
+import type { ClaimedSeverity, GateDecision, InvariantClass, Severity, Triage } from '../schema/types.ts';
+import type { FindingRecord } from './stage.ts';
 
-const RANK = { informational: 0, low: 1, medium: 2, high: 3, critical: 4 };
-const rank = (s) => (s in RANK ? RANK[s] : -1);
+const RANK: Record<Severity, number> = { informational: 0, low: 1, medium: 2, high: 3, critical: 4 };
+const rank = (s: string): number => (RANK as Record<string, number>)[s] ?? -1;
+const isSeverity = (s: string): s is Severity => Object.hasOwn(RANK, s);
 
-function gate(triage, policy) {
+type Policy = { fix_at: Severity };
+
+function gate(triage: Triage, policy: Policy): GateDecision {
   switch (triage.verdict) {
     case 'not_exploitable':
       return { action: 'report_only', reason: 'not_exploitable' };
@@ -22,8 +27,10 @@ function gate(triage, policy) {
       return rank(triage.severity) >= rank(policy.fix_at)
         ? { action: 'fix', threshold: policy.fix_at, reason: 'at_or_above_threshold' }
         : { action: 'report_only', reason: 'below_threshold' };
-    default:
-      throw new Error(`unknown verdict: ${triage.verdict}`);
+    default: {
+      const unknown: never = triage;
+      throw new Error(`unknown verdict: ${(unknown as { verdict: unknown }).verdict}`);
+    }
   }
 }
 
@@ -32,7 +39,7 @@ function gate(triage, policy) {
 // Ordering ONLY. Never filters. This is the one consumer of a scanner's claim besides the
 // report, and ordering is lossy-tolerant in a way filtering is not: a mis-ordered finding
 // still gets triaged, a filtered one never does.
-const CLASS_RISK = {
+const CLASS_RISK: Record<InvariantClass, number> = {
   'injection.sql': 3, 'injection.command': 3, 'injection.code': 3, 'injection.path': 3,
   'injection.template': 3, 'deserialization.unsafe': 3, 'authz.missing': 3,
   'xss.stored': 2, 'ssrf': 2, 'authn.weak': 2, 'secret.hardcoded': 2, 'injection.ldap': 2,
@@ -42,20 +49,20 @@ const CLASS_RISK = {
   'dos.uncontrolled': 1, 'config.insecure': 1, 'other': 0,
 };
 
-const TRI = { HIGH: 3, MEDIUM: 2, LOW: 1 };
+const TRI: Record<string, number> = { HIGH: 3, MEDIUM: 2, LOW: 1 };
 
 // Each scanner is ranked in its OWN vocabulary. There is no shared scale and we do not invent
 // one. Semgrep's own likelihood/impact metadata is better signal than its rule-category
 // severity, so it is preferred when present; measured on real output, `detect-child-process`
 // is ERROR with likelihood LOW while `path-join-resolve-traversal` is WARNING with
 // likelihood HIGH, and ranking by severity alone inverts them.
-function claimedRank(claimed) {
+function claimedRank(claimed: ClaimedSeverity): number {
   switch (claimed.kind) {
     case 'semgrep': {
       if (claimed.likelihood || claimed.impact) {
-        return ((TRI[claimed.likelihood] || 0) + (TRI[claimed.impact] || 0)) / 2;
+        return ((TRI[claimed.likelihood ?? ''] || 0) + (TRI[claimed.impact ?? ''] || 0)) / 2;
       }
-      return { ERROR: 3, WARNING: 2, INFO: 1 }[claimed.severity] || 0;
+      return ({ ERROR: 3, WARNING: 2, INFO: 1 } as const)[claimed.severity] || 0;
     }
     case 'codeql': {
       if (claimed.security_severity !== null && claimed.security_severity !== undefined) {
@@ -63,16 +70,18 @@ function claimedRank(claimed) {
         const s = claimed.security_severity;
         return s >= 9 ? 4 : s >= 7 ? 3 : s >= 4 ? 2 : 1;
       }
-      return { error: 3, warning: 2, recommendation: 1 }[claimed.problem_severity] || 0;
+      return claimed.problem_severity ? ({ error: 3, warning: 2, recommendation: 1 } as const)[claimed.problem_severity] : 0;
     }
-    default:
-      throw new Error(`unknown claim kind: ${claimed.kind}`);
+    default: {
+      const unknown: never = claimed;
+      throw new Error(`unknown claim kind: ${(unknown as { kind: unknown }).kind}`);
+    }
   }
 }
 
 const ENTRY_HINT = /(^|\/)(routes?|controllers?|handlers?|api|endpoints?|cmd|views?|pages?)(\/|\.)/i;
 
-function priority(f) {
+function priority(f: FindingRecord): number {
   const obs = f.sites.flatMap((s) => s.observations);
   const maxClaim = obs.length ? Math.max(...obs.map((o) => claimedRank(o.claimed))) : 0;
   const scanners = new Set(obs.map((o) => o.scanner));
@@ -88,14 +97,15 @@ function priority(f) {
   );
 }
 
-const order = (findings) =>
+const order = (findings: FindingRecord[]) =>
   [...findings].sort((a, b) => priority(b) - priority(a) || a.id.localeCompare(b.id));
 
-export { gate, priority, order, rank, claimedRank, RANK };
+export type { Policy };
+export { gate, priority, order, rank, claimedRank, isSeverity, RANK };
 
 if (import.meta.main) {
   const [file, fixAt = 'medium'] = process.argv.slice(2);
-  if (!file) { console.error('usage: gate.ts <findings.json> [fix_at]'); process.exit(2); }
+  if (!file || !isSeverity(fixAt)) { console.error('usage: gate.ts <findings.json> [fix_at]'); process.exit(2); }
   const findings = JSON.parse(fs.readFileSync(file, 'utf8'));
   for (const f of order(findings)) {
     const g = f.triage ? gate(f.triage, { fix_at: fixAt }) : null;

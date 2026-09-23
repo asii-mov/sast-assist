@@ -9,7 +9,7 @@
     "erasableSyntaxOnly": true,
     "verbatimModuleSyntax": true,
     "resolveJsonModule": true,
-    "strict": false,
+    "strict": true,
     "skipLibCheck": true
   },
   "include": ["skills/sast-remediate/**/*.ts", "tools/**/*.ts"]
