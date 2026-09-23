@@ -14,6 +14,8 @@ import { execFileSync } from 'child_process';
 import * as R from '../bin/run.ts';
 import { runAgent } from '../bin/agent.ts';
 import { renderRemediation, renderHandoff } from '../bin/report.ts';
+import type { SecurityContract, Triage, Witness } from '../schema/types.ts';
+import type { FixStep } from './fake-claude.ts';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const FIXTURE = path.resolve(ROOT, '../../fixtures/vuln-app');
@@ -38,11 +40,11 @@ Object.assign(process.env, {
   XDG_CACHE_HOME: path.join(TMP, 'cache'),
 });
 
-const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' });
+const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' });
 
 // ------------------------------------------------------------------ scenario
 
-const contract = (witness) => ({
+const contract = (witness: Witness): SecurityContract => ({
   invariant: 'every string reaching the file read in `read` names a file already present in the '
     + 'public directory, so no request can select a path outside it',
   violating_input: '../../secret.txt',
@@ -55,7 +57,7 @@ const contract = (witness) => ({
   forbidden_resolutions: ['do not delete the route', 'do not return an error for every request'],
 });
 
-const WITNESS = {
+const WITNESS: Record<'executable' | 'argued' | 'dynamic', Witness> = {
   executable: {
     tier: 'executable', framework: 'node assert', entrypoint: 'read',
     attack_input: '../../secret.txt', asserts: 'the traversal is answered with 400',
@@ -82,28 +84,28 @@ const WITNESS = {
   },
 };
 
-const exploitable = (tier) => ({
+const exploitable = (tier: keyof typeof WITNESS): Triage => ({
   verdict: 'exploitable', established_by: 'agent', contract: contract(WITNESS[tier]),
   severity: 'high', impact: 'any file readable by the process is returned to the caller',
   likelihood: 'a single crafted request', blast_radius: 'every file the process user can read',
 });
 
-const PATCH = { act: 'patch', witness: true };
+const PATCH: FixStep = { act: 'patch', witness: true };
 
 // The semgrep result for the path finding, moved to wherever `path.join(ROOT` sits in the
 // patched file. Same rule, same file, new line: what a correct fix that keeps the call shape
 // looks like to a rescan.
-function sameRuleMoved(worktree) {
+function sameRuleMoved(worktree?: string) {
   const base = JSON.parse(fs.readFileSync(path.join(SCANS, 'semgrep.json'), 'utf8'));
-  const hit = base.results.find((r) => r.path === 'src/routes/files.js');
-  const lines = fs.readFileSync(path.join(worktree, hit.path), 'utf8').split('\n');
+  const hit = base.results.find((r: { path: string }) => r.path === 'src/routes/files.js');
+  const lines = fs.readFileSync(path.join(worktree ?? '', hit.path), 'utf8').split('\n');
   const at = lines.findIndex((l) => l.includes('path.join(ROOT')) + 1;
   const moved = { ...hit, start: { ...hit.start, line: at }, end: { ...hit.end, line: at },
     extra: { ...hit.extra, lines: lines[at - 1] } };
   return { ...base, results: [moved] };
 }
 
-function makeTarget(name, { dropTestScript }) {
+function makeTarget(name: string, { dropTestScript }: { dropTestScript: boolean }) {
   const dir = path.join(TMP, name, 'repo');
   fs.cpSync(FIXTURE, dir, { recursive: true, filter: (src) => !src.includes(`${path.sep}.claude`) });
   if (dropTestScript) {
@@ -118,12 +120,9 @@ function makeTarget(name, { dropTestScript }) {
   return dir;
 }
 
-// One entry per fixer call, read by test/fake-claude.ts.
-type FixStep = { act: string; witness?: boolean; reason?: string; stray?: boolean; commit?: boolean };
-
-async function runScenario(name, { tier = 'executable', fix = [PATCH], verify = 'cheap', witness = null,
+async function runScenario(name: string, { tier = 'executable', fix = [PATCH], verify = 'cheap', witness = null,
   rescan = () => ({ results: [], errors: [] }), dropTestScript = false, runs = 1, prepare = null }: {
-  tier?: string; fix?: FixStep[]; verify?: string; witness?: string | null; rescan?: (worktree?: string) => unknown;
+  tier?: keyof typeof WITNESS; fix?: FixStep[]; verify?: string; witness?: string | null; rescan?: (worktree?: string) => unknown;
   dropTestScript?: boolean; runs?: number; prepare?: ((target: string, out: string) => void) | null;
 } = {}) {
   const target = makeTarget(name, { dropTestScript });
@@ -134,11 +133,12 @@ async function runScenario(name, { tier = 'executable', fix = [PATCH], verify = 
   process.env.SAST_FAKE_CLAUDE = scenarioFile;
   if (prepare) prepare(target, out);
 
-  const deps = {
+  const deps: R.Deps = {
     runAgent, renderRemediation, renderHandoff,
     exec: (cmd, args, o) => {
       if (cmd !== 'semgrep') return R.realExec(cmd, args, o);
       const outArg = args.find((a) => a.startsWith('--json-output='));
+      if (!outArg) throw new Error('semgrep was called without --json-output');
       fs.writeFileSync(outArg.slice('--json-output='.length), JSON.stringify(rescan(args[args.length - 1])));
       return { status: 0, stdout: '', stderr: '' };
     },
@@ -149,9 +149,10 @@ async function runScenario(name, { tier = 'executable', fix = [PATCH], verify = 
   const opts = R.parseArgs([`--target=${target}`, `--scans=${SCANS}`, `--out=${out}`,
     `--verify=${verify}`, '--timeout-ms=30000', ...(witness ? [`--witness=${witness}`] : [])]);
 
-  const snapshot = (res) => {
+  const snapshot = (res: R.RunResult) => {
+    assert.ok(!res.dryRun, 'a scenario run is never a dry run');
     const calls = fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
-    const record = (id) => JSON.parse(fs.readFileSync(path.join(out, 'findings', `${id}.json`), 'utf8'));
+    const record = (id: string) => JSON.parse(fs.readFileSync(path.join(out, 'findings', `${id}.json`), 'utf8'));
     return {
       runId: res.runId,
       calls, out,
@@ -159,7 +160,7 @@ async function runScenario(name, { tier = 'executable', fix = [PATCH], verify = 
       auditCalls: calls.filter((c) => c.role === 'audit').length,
       branches: git(target, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/sast-fix/')
         .split('\n').filter(Boolean).sort(),
-      filesOn: (branch) => git(target, 'diff', '--name-only', 'main', branch).split('\n').filter(Boolean),
+      filesOn: (branch: string) => git(target, 'diff', '--name-only', 'main', branch).split('\n').filter(Boolean),
       states: Object.fromEntries([PATH_ID, COMMAND_ID, TRANSPORT_ID]
         .map((id) => [id, (record(id).disposition || {}).state || null])),
       record: record(PATH_ID),
@@ -168,16 +169,13 @@ async function runScenario(name, { tier = 'executable', fix = [PATCH], verify = 
     };
   };
 
-  let last, first;
-  for (let i = 0; i < runs; i++) {
-    const res = await R.run(opts, deps);
-    last = snapshot(res);
-    if (i === 0) first = last;
-  }
+  const first = snapshot(await R.run(opts, deps));
+  let last = first;
+  for (let i = 1; i < runs; i++) last = snapshot(await R.run(opts, deps));
   return { ...last, first };
 }
 
-const memo = (fn) => { let p; return () => (p = p || fn()); };
+const memo = <T>(fn: () => Promise<T>) => { let p: Promise<T> | undefined; return () => (p = p || fn()); };
 const scenarios = {
   plain: memo(() => runScenario('plain')),
   noTestScript: memo(() => runScenario('notest', { dropTestScript: true })),
@@ -203,8 +201,8 @@ const scenarios = {
   })),
 };
 
-function sections(report) {
-  const out = [];
+function sections(report: string) {
+  const out: { heading: string; body: string }[] = [];
   for (const line of report.split('\n')) {
     if (/^(\*\*.+\*\*|#+ .+)$/.test(line.trim())) out.push({ heading: line.trim(), body: '' });
     else if (out.length) out[out.length - 1].body += `${line}\n`;
@@ -214,9 +212,9 @@ function sections(report) {
 
 // ------------------------------------------------------------------- cases
 
-const tests = [];
-const t = (name, fn) => tests.push({ name, fn, unit: null });
-t.expectFail = (unit, name, fn) => tests.push({ name, fn, unit });
+const tests: { name: string; fn: () => unknown; unit: string | null }[] = [];
+const t = (name: string, fn: () => unknown) => tests.push({ name, fn, unit: null });
+t.expectFail = (unit: string, name: string, fn: () => unknown) => tests.push({ name, fn, unit });
 
 t('a real run on a real git copy reaches report', async () => {
   const s = await scenarios.plain();
@@ -243,7 +241,7 @@ t('every agent reaches the real CLI spawn confined, and the fixer\'s cwd is outs
   assert.ok(path.relative(s.out, fix.cwd).startsWith('..'), `${fix.cwd} is inside ${s.out}`);
   for (const c of s.calls) {
     assert.ok(c.argv.includes('--restricted'), `${c.role} call is not restricted`);
-    assert.ok(!c.argv.some((a) => /\bBash\b/.test(a) && a !== c.argv[1]), `${c.role} call names Bash`);
+    assert.ok(!c.argv.some((a: string) => /\bBash\b/.test(a) && a !== c.argv[1]), `${c.role} call names Bash`);
   }
 });
 
@@ -314,6 +312,7 @@ t('an argued fix is not listed under Fixed', async () => {
 t('an argued fix is still named as waiting on review under What changed', async () => {
   const s = await scenarios.argued();
   const changed = sections(s.report).find((x) => /What changed/.test(x.heading));
+  assert.ok(changed, 'REMEDIATION.md has a What changed section');
   assert.ok(changed.body.includes(`\`${PATH_ID}\`: \`sast-fix/`), changed.body);
   assert.ok(!s.report.includes('Nothing is waiting on review'), changed.body);
 });
@@ -375,7 +374,7 @@ t('with --witness=dynamic, a fix that stops the attack and keeps the control gre
   assert.strictEqual(v.differential_witness.status, 'pass');
   assert.strictEqual(v.functional_control.status, 'pass');
   assert.strictEqual(v.deterministic_guard.status, 'pass');
-  assert.deepStrictEqual(v.differential_witness.transcript.map((x) => `${x.label}:${x.tree}`),
+  assert.deepStrictEqual(v.differential_witness.transcript.map((x: { label: string; tree: string }) => `${x.label}:${x.tree}`),
     ['control:base', 'attack:base', 'attack:head', 'control:head']);
 });
 
@@ -389,17 +388,17 @@ t('with --witness=dynamic, a fix that disables the endpoint passes the different
   assert.deepStrictEqual(s.record.disposition.failed, ['functional_control']);
 });
 
-const brief = (e) => e.message.replace(/\x1b\[[0-9;]*m/g, '').split('\n').map((l) => l.trim()).filter(Boolean).join(' ').slice(0, 200);
+const brief = (e: unknown) => (e instanceof Error ? e.message : String(e)).replace(/\x1b\[[0-9;]*m/g, '').split('\n').map((l) => l.trim()).filter(Boolean).join(' ').slice(0, 200);
 
 (async () => {
   let pass = 0, fail = 0;
   for (const { name, fn, unit } of tests) {
-    let err = null;
+    let err: unknown = null;
     try { await fn(); } catch (e) { err = e; }
     if (!unit && !err) { pass++; console.log(`  ok   ${name}`); }
     else if (unit && err) { pass++; console.log(`  expected-fail (${unit}) ${name}\n         ${brief(err)}`); }
     else if (unit) { fail++; console.log(`  FAIL ${name}\n         passes now; ${unit} landed, so make it a plain case`); }
-    else { fail++; console.log(`  FAIL ${name}\n         ${err.stack}`); }
+    else { fail++; console.log(`  FAIL ${name}\n         ${err instanceof Error ? err.stack : err}`); }
   }
   fs.rmSync(TMP, { recursive: true, force: true });
   console.log(`\n${pass} passed, ${fail} failed`);
