@@ -6,31 +6,37 @@ import fs from 'fs';
 import path from 'path';
 import { normalize, makeRepo } from './normalize.ts';
 import type { RawScans } from './normalize.ts';
-import type { ObligationResult } from './stage.ts';
+import type { ObligationResult, FindingRecord } from './stage.ts';
+import type { Finding } from '../schema/types.ts';
+import { isRecord } from './validate.ts';
 
-const ensureDir = (d) => fs.mkdirSync(d, { recursive: true });
-const readJson = (f) => JSON.parse(fs.readFileSync(f, 'utf8'));
-const writeJson = (f, v) => fs.writeFileSync(f, JSON.stringify(v, null, 2));
-const trim = (s) => String(s || '').trim().split('\n').slice(-3).join(' ').slice(0, 300);
+const ensureDir = (d: string) => fs.mkdirSync(d, { recursive: true });
+const readJson = (f: string): unknown => JSON.parse(fs.readFileSync(f, 'utf8'));
+const writeJson = (f: string, v: unknown) => fs.writeFileSync(f, JSON.stringify(v, null, 2));
+const trim = (s: unknown) => String(s || '').trim().split('\n').slice(-3).join(' ').slice(0, 300);
 
 type ScanConfig = { semgrep: string[]; codeql_suite: string };
 type ScannerStatus = { name: string; status: string; detail: string; config?: string; languages?: string[] };
 type Rescan = { ran: boolean; scanners: ScannerStatus[]; original_absent: boolean | null; new_findings: string[] };
+type SyncExec = (cmd: string, args: string[], o?: { cwd?: string; timeoutMs?: number }) => { status: number; stdout: string; stderr: string };
+type ScanDeps = { exec: SyncExec; onPath?: (bin: string) => boolean };
+type ScanOpts = { scans: string | null; scanners: string[]; scanConfig: ScanConfig; languages?: string[] | null };
+type Baseline = { scanners: string[]; ruleFiles: Set<string>; scanConfig: ScanConfig; languages: string[] | null };
 
 const DEFAULT_SCAN_CONFIG: Readonly<ScanConfig> = Object.freeze({ semgrep: ['p/default'], codeql_suite: 'security-extended' });
 const SUITE_NAME = /^[a-z0-9][a-z0-9-]*$/;
 // A local rules file is stored absolute so a resume from another directory scans identically.
-const semgrepConfigArg = (c) => (fs.existsSync(c) ? path.resolve(c) : c);
+const semgrepConfigArg = (c: string) => (fs.existsSync(c) ? path.resolve(c) : c);
 
 // run-metadata.json is read back on resume, so its scan_config is parsed, not trusted.
-function parseScanConfig(x) {
-  if (!x || !Array.isArray(x.semgrep) || !x.semgrep.length) return null;
-  if (!x.semgrep.every((c) => typeof c === 'string' && c)) return null;
+function parseScanConfig(x: unknown): ScanConfig | null {
+  if (!isRecord(x) || !Array.isArray(x.semgrep) || !x.semgrep.length) return null;
+  if (!x.semgrep.every((c): c is string => typeof c === 'string' && !!c)) return null;
   if (typeof x.codeql_suite !== 'string' || !SUITE_NAME.test(x.codeql_suite)) return null;
   return { semgrep: [...x.semgrep], codeql_suite: x.codeql_suite };
 }
 
-const onPath = (bin) => (process.env.PATH || '').split(path.delimiter)
+const onPath = (bin: string) => (process.env.PATH || '').split(path.delimiter)
   .some((d) => d && fs.existsSync(path.join(d, bin)));
 
 const SCANNERS = ['semgrep', 'codeql'];
@@ -47,7 +53,7 @@ const LANGS: [lang: string, exts: string[], markers: string[]][] = [
 const SKIP_DIRS = new Set(['node_modules', 'vendor', 'third_party', 'dist', 'build', 'target', 'venv', '__pycache__']);
 const SAMPLE_LIMIT = 5000;
 
-function hasWorkflows(root) {
+function hasWorkflows(root: string): boolean {
   try {
     const dir = path.join(root, '.github', 'workflows');
     return fs.readdirSync(dir).some((f) => /\.ya?ml$/.test(f));
@@ -56,16 +62,17 @@ function hasWorkflows(root) {
 
 // Source files decide, not markers: codeql database create fails outright on a language with a
 // marker and no code.
-function detectLanguages(root) {
-  const byExt = new Map(LANGS.flatMap(([lang, exts]) => exts.map((e) => [e, lang])));
-  const found = new Set();
+function detectLanguages(root: string): string[] {
+  const byExt = new Map(LANGS.flatMap(([lang, exts]) => exts.map((e): [string, string] => [e, lang])));
+  const found = new Set<string>();
   const queue = [root];
   let examined = 0;
   let budgetHit = false;
   outer:
   while (queue.length) {
     const dir = queue.shift();
-    let entries;
+    if (dir === undefined) break;
+    let entries: fs.Dirent[];
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of entries) {
       if (found.size === LANGS.length) break outer;
@@ -93,12 +100,12 @@ function detectLanguages(root) {
 
 // A scanner that is absent or exits non-zero is recorded and the run continues with what it has.
 // Both failing is fatal, because normalizing nothing would report a clean repository.
-function runScanners(opts, deps, target, scanDir) {
+function runScanners(opts: ScanOpts, deps: ScanDeps, target: string, scanDir: string): { raw: RawScans; scanners: ScannerStatus[] } {
   const raw: RawScans = {};
-  const scanners = [];
+  const scanners: ScannerStatus[] = [];
 
   if (opts.scans) {
-    for (const [name, file] of [['semgrep', 'semgrep.json'], ['codeql', 'codeql.sarif']]) {
+    for (const [name, file] of [['semgrep', 'semgrep.json'], ['codeql', 'codeql.sarif']] as const) {
       if (!opts.scanners.includes(name)) continue;
       const p = path.join(opts.scans, file);
       if (!fs.existsSync(p)) { scanners.push({ name, status: 'absent', detail: `${p} not found` }); continue; }
@@ -127,10 +134,10 @@ function runScanners(opts, deps, target, scanDir) {
     } else {
       const langs = opts.languages || detectLanguages(target);
       if (!langs.length) { scanners.push({ name, status: 'failed', detail: 'no language detected' }); continue; }
-      const problems = [];
-      const analyzed = [];
-      let allRuns = [];
-      let template = null;
+      const problems: string[] = [];
+      const analyzed: string[] = [];
+      let allRuns: unknown[] = [];
+      let template: Record<string, unknown> | null = null;
       for (const lang of langs) {
         const db = path.join(scanDir, `codeql-db-${lang}`);
         const out = path.join(scanDir, `codeql-${lang}.sarif`);
@@ -143,8 +150,9 @@ function runScanners(opts, deps, target, scanDir) {
         if (!fs.existsSync(out)) { problems.push(`${lang}: ${trim(a.stderr)}`); continue; }
         if (a.status !== 0) problems.push(`${lang}: ${trim(a.stderr)}`);
         const parsed = readJson(out);
+        if (!isRecord(parsed)) { problems.push(`${lang}: SARIF is not an object`); continue; }
         if (!template) template = parsed;
-        allRuns = allRuns.concat(parsed.runs || []);
+        allRuns = allRuns.concat(Array.isArray(parsed.runs) ? parsed.runs : []);
         analyzed.push(lang);
       }
       if (!allRuns.length) { scanners.push({ name, status: 'failed', detail: problems.join('; ') }); continue; }
@@ -162,18 +170,19 @@ function runScanners(opts, deps, target, scanDir) {
 // as a finding the patch introduced, and the retry that follows rewards dodging the rule's shape.
 // A rescan finding is new only when base had no hit of its rule in its file. The price is written
 // down in references/FIX-AND-VERIFY.md.
-const ruleFiles = (f) => f.sites.flatMap((s) => s.observations.map((o) => `${o.rule_id}\u0000${s.locus.file}`));
+const ruleFiles = (f: Pick<Finding, 'sites'>) => f.sites.flatMap((s) => s.observations.map((o) => `${o.rule_id}\u0000${s.locus.file}`));
 
-function baselineOf(raw, findings, scanConfig, scanners) {
+function baselineOf(raw: RawScans, findings: Pick<Finding, 'sites'>[], scanConfig: ScanConfig, scanners: ScannerStatus[]): Baseline {
   return {
     scanners: Object.keys(raw),
     ruleFiles: new Set(findings.flatMap(ruleFiles)),
     scanConfig,
-    languages: ((scanners || []).find((s) => s.name === 'codeql') || {}).languages || null,
+    languages: (scanners || []).find((s) => s.name === 'codeql')?.languages || null,
   };
 }
 
-function rescan(finding, worktree, scanDir, { deps, runId, baseline }): { obligation: ObligationResult; rescan: Rescan } {
+function rescan(finding: FindingRecord, worktree: string, scanDir: string,
+  { deps, runId, baseline }: { deps: ScanDeps; runId: string; baseline: Baseline }): { obligation: ObligationResult; rescan: Rescan } {
   const { raw, scanners } = runScanners(
     { scans: null, scanners: baseline.scanners, scanConfig: baseline.scanConfig, languages: baseline.languages },
     deps, worktree, scanDir);
@@ -195,7 +204,7 @@ function rescan(finding, worktree, scanDir, { deps, runId, baseline }): { obliga
   };
 }
 
-export type { ScanConfig, ScannerStatus, Rescan };
+export type { ScanConfig, ScannerStatus, Rescan, SyncExec, ScanDeps, ScanOpts, Baseline };
 export {
   runScanners, detectLanguages, onPath, trim, baselineOf, rescan,
   DEFAULT_SCAN_CONFIG, SUITE_NAME, semgrepConfigArg, parseScanConfig, SCANNERS,

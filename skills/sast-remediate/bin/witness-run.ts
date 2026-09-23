@@ -10,6 +10,7 @@ import http from 'http';
 import { boot } from './app-harness.ts';
 import type { HttpResult } from './app-harness.ts';
 import type { ObligationResult } from './stage.ts';
+import { isRecord } from './validate.ts';
 import type { AppHarness, Booted } from './app-harness.ts';
 import type { HttpExchange, Observable, Witness } from '../schema/types.ts';
 
@@ -25,8 +26,6 @@ type TranscriptEntry = {
   label: string; tree: keyof Trees; method: string; path: string; query: unknown;
   status: number; ms: number; headers: Record<string, unknown>; body_len: number;
 };
-
-const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 // The schema leaves the body shape open, so each kind's value is checked here before it is sent.
 function bodyText(body: Record<string, unknown> | undefined): string | null {

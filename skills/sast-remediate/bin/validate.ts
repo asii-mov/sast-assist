@@ -209,5 +209,5 @@ function main(argv: string[]): number {
   return 1;
 }
 
-export { validate };
+export { validate, isRecord };
 if (import.meta.main) process.exit(main(process.argv.slice(2)));
