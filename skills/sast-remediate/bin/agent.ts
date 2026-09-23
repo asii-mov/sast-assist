@@ -123,6 +123,7 @@ function schemaAt(schemaPath: string, pointer: string) {
   const abs = path.resolve(schemaPath);
   let doc = SCHEMA_CACHE.get(abs);
   if (!doc) {
+    // One of this skill's own schema files, read for its $defs.
     doc = JSON.parse(fs.readFileSync(abs, 'utf8')) as { $defs?: object };
     SCHEMA_CACHE.set(abs, doc);
   }

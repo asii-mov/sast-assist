@@ -42,8 +42,7 @@ function defaultOutDir(target: string, base: string | null, root = path.join(os.
 function readRecorded(metaFile: string): { level: VerifyLevel | null; scanConfig: ScanConfig | null } {
   let m: unknown = null;
   try { m = readJson(metaFile); } catch { /* a fresh run */ }
-  if (!isRecord(m)) m = {};
-  const r = m as Record<string, unknown>;
+  const r = isRecord(m) ? m : {};
   return {
     level: typeof r.verify_level === 'string' && isVerifyLevel(r.verify_level) ? r.verify_level : null,
     scanConfig: parseScanConfig(r.scan_config),

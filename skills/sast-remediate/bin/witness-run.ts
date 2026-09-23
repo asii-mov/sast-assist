@@ -77,6 +77,7 @@ function request(baseUrl: string, ex: HttpExchange, timeoutMs = 8000): Promise<R
 
 function jsonPath(obj: unknown, p: string): unknown {
   return p.replace(/^\$\.?/, '').split('.').filter(Boolean)
+    // Indexing any non-null JSON value by key reads a field, an array item, or undefined.
     .reduce<unknown>((o, k) => (o == null ? o : (o as Record<string, unknown>)[k]), obj);
 }
 

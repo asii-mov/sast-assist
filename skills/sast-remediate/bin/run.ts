@@ -333,6 +333,7 @@ function bundleDef(name: string): string {
     }
     return out;
   };
+  // Every agent-results def is a schema object, so the walk hands one back.
   const root = walk(agent.$defs[name]) as Record<string, unknown>;
   return JSON.stringify({ ...root, $defs: defs }, null, 2);
 }

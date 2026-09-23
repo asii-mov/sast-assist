@@ -181,6 +181,7 @@ if (import.meta.main) {
     process.exit(2);
   }
   const counts = new Map<Stage, number>(STAGES.map((s) => [s, 0]));
+  // A findings file this skill wrote.
   for (const f of JSON.parse(fs.readFileSync(file, 'utf8')) as FindingRecord[]) {
     const s = stageOf(f, level);
     counts.set(s, (counts.get(s) ?? 0) + 1);

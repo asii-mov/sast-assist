@@ -111,6 +111,7 @@ export { gate, priority, order, rank, claimedRank, isSeverity, RANK };
 if (import.meta.main) {
   const [file, fixAt = 'medium'] = process.argv.slice(2);
   if (!file || !isSeverity(fixAt)) { console.error('usage: gate.ts <findings.json> [fix_at]'); process.exit(2); }
+  // A findings file this skill wrote.
   const findings = JSON.parse(fs.readFileSync(file, 'utf8')) as FindingRecord[];
   for (const f of order(findings)) {
     const g = f.triage ? gate(f.triage, { fix_at: fixAt }) : null;

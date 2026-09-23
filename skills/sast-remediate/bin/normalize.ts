@@ -17,8 +17,9 @@ import type { ClaimedSeverity, Finding, FlowStep, InvariantClass, Locus, Observa
 type RawScans = { semgrep?: unknown; codeql?: unknown };
 
 // The parts of each scanner's output this file reads, every field optional because the code
-// reads each one defensively. The enum-valued fields are claims, not checks: run.ts validates
-// every normalized finding against finding.schema.json and stops the run on a mismatch.
+// reads each one defensively. The enum-valued fields, and the rule ids read as present, are
+// claims rather than checks: run.ts validates every normalized finding against
+// finding.schema.json and stops the run on a mismatch.
 type SemgrepClaim = Extract<ClaimedSeverity, { kind: 'semgrep' }>;
 type SemgrepOutput = {
   results?: {
@@ -237,15 +238,16 @@ function fromSarif(sarif: unknown, dropped: string[]): RawResult[] {
       let flow: RawFlow | null = null;
       const cf = r.codeFlows && r.codeFlows[0];
       const tf = cf && cf.threadFlows && cf.threadFlows[0];
-      if (tf && Array.isArray(tf.locations) && tf.locations.length >= 2) {
+      const locs = tf && Array.isArray(tf.locations) ? tf.locations : [];
+      if (locs.length >= 2) {
         flow = {
           provenance: 'codeql_codeflows',
-          steps: tf.locations.map((l, i) => {
+          steps: locs.map((l, i) => {
             const p = l.location && l.location.physicalLocation;
             return {
               file: (p && p.artifactLocation && p.artifactLocation.uri) || file,
               line: (p && p.region && p.region.startLine) || line,
-              role: i === 0 ? 'source' : i === (tf.locations as unknown[]).length - 1 ? 'sink' : 'propagation',
+              role: i === 0 ? 'source' : i === locs.length - 1 ? 'sink' : 'propagation',
               note: (l.location && l.location.message && l.location.message.text) || null,
             };
           }),
