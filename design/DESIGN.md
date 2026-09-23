@@ -135,7 +135,7 @@ skills/sast-remediate/
     ledger.cjs                parent-only read/write/resume/lease over findings/
 ```
 
-Eleven source files. the reference skill's skill is twenty-two; §9 says what was dropped.
+Eleven source files. The reference skill is twenty-two; §9 says what was dropped.
 
 **Modules are cut by knowledge, not by execution order.** Ingest, triage, gate, fix and
 verify are an execution order, and cutting modules along it is textbook temporal
@@ -377,7 +377,7 @@ type Provenance = "agent" | "carried_from_prior_run" | "deterministic_prepass";
 ```
 
 **`severity` exists only on the `exploitable` branch.** Not optional, not nullable, absent
-from the type. the reference skill's "only confirmed records receive severity" made unrepresentable
+from the type. The reference skill's "only confirmed records receive severity" made unrepresentable
 rather than stated. The gate cannot accidentally read a severity nobody established.
 
 ```ts
@@ -1241,7 +1241,7 @@ best-effort. `selectWitnessTier` falls back and records `obstacle: "no_app_harne
 
 Three roles. Each returns exactly one JSON object and no surrounding prose. A malformed or
 prose-wrapped result is **discarded, never repaired**, and re-run once with a fresh agent
-(the reference skill's rule). Each agent gets its own `agents/<id>/scratch/`; the parent is the sole
+(The reference skill's rule). Each agent gets its own `agents/<id>/scratch/`; the parent is the sole
 writer of everything shared.
 
 | Role | Receives | Never receives | Returns |
@@ -1281,7 +1281,7 @@ One file per finding. The parent is the only writer, so parallel agents never co
 
 ---
 
-## 9. What we took from the reference, and what we dropped
+## 9. What we took from the reference skill, and what we dropped
 
 **Taken:** adversarial validation (the checker is never the actor); three verdicts with
 `undecidable` carrying an exact unresolved fact and no severity; stable identity across state

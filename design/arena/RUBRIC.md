@@ -36,7 +36,7 @@ pass-through layers, temporal decomposition (modules named for pipeline stages t
 re-handle the same representation), and wire types (raw SARIF) on the public surface.
 
 ## C5. Prior-art judgment
-Steals what transfers from the reference (adversarial validation, three verdicts,
+Steals what transfers from the reference skill (adversarial validation, three verdicts,
 fingerprints, parent-sole-writer, schema-as-gate, severity-requires-impact) and drops
 what does not (coverage ledger, hunting waves, the fstat promotion ritual) — with
 reasons stated, not silently. Penalize both cargo-culting all six phases and ignoring

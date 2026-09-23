@@ -12,11 +12,11 @@ and verifies the fix still works.
 
 Three things make the shape non-obvious, all established in Phase A.
 
-**The prior art is inverted.** the reference skill's `security-audit-skill` is the reference for
+**The prior art is inverted.** The reference `security-audit-skill` is the reference for
 agentic security work, but its six phases exist to answer *"did we look everywhere?"*, LLM
 hunters generate findings, and the coverage ledger and critic waves prove coverage. The
 scanners already answer that deterministically. Our expensive question is *"which of these
-are real, and can we fix them without breaking the build?"* the reference skill's Phase 3 (a fresh
+are real, and can we fix them without breaking the build?"* The reference skill's Phase 3 (a fresh
 verifier tries to refute a candidate) is false-positive triage almost verbatim; its Phases
 1–2 are replaced by ingestion; and its stated boundary, *"the audit describes fixes; it does
 not modify target source"*, means fix-and-verify inherits no shape from the prior art at
@@ -72,7 +72,7 @@ first-class because the right place to enforce an invariant is frequently upstre
 sink the scanner flagged.
 
 **Invariants encoded in types, per encode-lessons-in-structure.** `severity` exists only on
-the `exploitable` branch of the `Triage` union. the reference skill's "only confirmed records receive
+the `exploitable` branch of the `Triage` union. The reference skill's "only confirmed records receive
 severity" made unrepresentable rather than stated. `Witness.expected_pre_fix: "fail"` is a
 literal type, so a witness that does not claim to be red before the fix cannot be constructed.
 `PatchAttempt.attempt: 1 | 2` puts the retry cap in the type. `stageOf(f)` derives pipeline
@@ -162,7 +162,7 @@ the only candidate to demonstrate guidance mode rather than assert it.
   independent mind cold-reading the frozen contract can decline before any patch exists. An
   agent that just wrote "verdict: exploitable" will not conclude two steps later that it is
   unsure. The base's typed contract already removes the lossy-handoff objection.
-- *the reference skill's coverage ledger, critic waves, `fstat` promotion ritual, recon and hunting
+- *The reference skill's coverage ledger, critic waves, `fstat` promotion ritual, recon and hunting
   prompts, and two separate LLM verification passes.* Reasons in `DESIGN.md` §9.
 
 **One override of three of the four candidates, and of the base.** Candidates 1, 2, and 3 all

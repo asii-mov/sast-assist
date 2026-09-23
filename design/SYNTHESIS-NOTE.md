@@ -143,7 +143,7 @@ equivalents side by side.
   verdict is complete and internally consistent; no re-run was attempted, since the session
   limit was the binding constraint.
 - The session scratchpad was **wiped between sessions**, destroying all four candidate
-  packages, the rubric file, and the the reference clone. `GROUNDING.md` survived on disk.
+  packages, the rubric file, and the reference clone. `GROUNDING.md` survived on disk.
   Phase E was therefore performed from: the four hand-backs, the full cross-judge verdict, and
   substantial verbatim reads taken before the wipe, including the base candidate's complete
   record type, gate, guard, and verification sections, which are the parts the synthesis leans
@@ -240,7 +240,7 @@ described as a principle carried over in spirit; with the dynamic tier it is loa
 
 The lost artifacts were recreated where recreation is meaningful:
 
-- `reference/security-audit-skill/`, the the reference prior art, re-cloned **into the project**
+- `reference/security-audit-skill/`, the prior art, re-cloned **into the project**
   rather than a scratchpad, `.git` stripped, 22 files. This is also the implementation
   reference for the schemas and validators.
 - `design/arena/RUBRIC.md`, restored verbatim from context; text unchanged from the original.

@@ -10,14 +10,14 @@ surrounding codebase to integrate with, so Phase A grounds in the **external
 contracts** the design must honor: the two scanners' output formats, and the prior-art
 skill the user pointed at.
 
-## Constraint 1: the reference skill's security-audit skill is the prior art, but inverted
+## Constraint 1: The reference security-audit skill is the prior art, but inverted
 
-Read in full at `github.com/reference/security-audit-skill` (22 files, ~5.4k lines).
+Read in full at `reference/security-audit-skill/` (22 files, ~5.4k lines).
 Six phases run in order. Reconnaissance, then coverage-led hunting, then candidate
 validation, then structured output, then independent record verification, then
 target-neutral reporting.
 
-**The inversion that matters.** the reference skill's skill *generates* findings: LLM hunter
+**The inversion that matters.** The reference skill *generates* findings: LLM hunter
 agents read source and propose vulnerabilities, and the expensive machinery
 (coverage ledger, hunting waves, coverage critics) exists to answer "did we look
 everywhere?" Our problem is the opposite. Semgrep and CodeQL already answered "did we
@@ -26,7 +26,7 @@ of findings are real, and can we fix them without breaking the build?"
 
 So the mapping is:
 
-| the reference phase | Our system |
+| Reference skill phase | Our system |
 |---|---|
 | 1. Reconnaissance + coverage ledger | **Replaced** by the scanners. Coverage is the rule packs that ran. |
 | 2. Coverage-led hunting waves | **Replaced** by scan ingestion + normalization + dedup. |
@@ -36,7 +36,7 @@ So the mapping is:
 | 6. Target-neutral reporting | **Reused**, extended with patch outcomes. |
 | *(none, CF explicitly refuses to patch)* | **New: fix + verify.** This is our novel surface. |
 
-the reference skill's SKILL.md states the boundary explicitly: *"The audit describes fixes; it
+The reference skill's SKILL.md states the boundary explicitly: *"The audit describes fixes; it
 does not modify target source."* Everything about applying, verifying, and rolling back
 a patch is design space the prior art does not cover. We inherit no shape there.
 
@@ -60,7 +60,7 @@ a patch is design space the prior art does not cover. We inherit no shape there.
   Directly relevant: N parallel triage agents writing one findings file is a data race.
 - **Schema + zero-dependency validator as a hard gate** (`report-schema.json`,
   `validate-findings.cjs`, run after every write). Structured agent output that is only
-  *asked for* in a prompt is not structured output. the reference skill's rule: discard a
+  *asked for* in a prompt is not structured output. The reference skill's rule: discard a
   malformed or prose-wrapped agent result, never repair it, re-run with a fresh agent.
 - **Severity requires demonstrated impact**, and "overall severity cannot exceed
   demonstrated impact." Their anchors (`critical`, `high`, `medium`, `low` and `informational`) are
@@ -157,12 +157,12 @@ also a third obligation nobody asks for until it bites: the patch must not intro
 ## Constraint 5: platform mechanics
 
 - Skills are `SKILL.md` + reference files, loaded progressively; frontmatter `name` +
-  `description` drive triggering. the reference skill's skill splits ~5.4k lines across 22 files
+  `description` drive triggering. The reference skill splits ~5.4k lines across 22 files
   so a run loads only the companions it selected.
 - Parallel subagents are spawned in a single message, each with its own prompt and
   isolated working area. Subagent results return to the parent; subagents do not share
   context with each other. Fan-out is the natural fit for per-finding triage.
-- the reference skill's skill ships Node.js zero-dependency validators. Zero-dep matters: the
+- The reference skill ships Node.js zero-dependency validators. Zero-dep matters: the
   skill must run in a target repo without installing anything into it.
 - Operating-mode split (guidance vs. Full run) prevents a skill from creating
   directories and running a 6-phase workflow when someone asked a question.
