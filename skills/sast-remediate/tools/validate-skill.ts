@@ -1,14 +1,14 @@
 #!/usr/bin/env node
-'use strict';
-// Playbook step 2 as a script rather than an eyeball. Run: node tools/validate-skill.cjs
+// Playbook step 2 as a script rather than an eyeball. Run: node tools/validate-skill.ts
 // Checks frontmatter, that every referenced file exists, that every schema ref resolves, that
 // every tool parses, and the prose conventions this skill is written to.
 
-const fs = require('fs');
-const path = require('path');
-const { execFileSync } = require('child_process');
+import fs from 'fs';
+import path from 'path';
+import { execFileSync } from 'child_process';
+import { validate } from '../bin/validate.ts';
 
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(import.meta.dirname, '..');
 let fail = 0;
 const ok = (m) => console.log(`  ok   ${m}`);
 const bad = (m) => { fail++; console.log(`  FAIL ${m}`); };
@@ -36,7 +36,7 @@ const mdFiles = [skillPath, ...fs.readdirSync(path.join(ROOT, 'references'))
 let refCount = 0, refMissing = 0;
 for (const f of mdFiles) {
   const text = fs.readFileSync(f, 'utf8');
-  const cited = new Set();
+  const cited = new Set<string>();
   // Only paths with a known extension are OURS. `bin/rails` and `config.ru` in prose are
   // paths in the TARGET repo and must not be resolved against this skill.
   for (const m of text.matchAll(/`((?:references|schema|bin|test|tools)\/[A-Za-z0-9_.\-]+\.(?:cjs|ts|json|md))`/g)) cited.add(m[1]);
@@ -58,7 +58,6 @@ for (const f of fs.readdirSync(path.join(ROOT, 'references'))) {
 ok('every reference file is cited by SKILL.md');
 
 // ---- schemas parse and refs resolve
-const { validate } = require(path.join(ROOT, 'bin/validate.ts'));
 const schemaDir = path.join(ROOT, 'schema');
 for (const f of fs.readdirSync(schemaDir).filter((x) => x.endsWith('.json'))) {
   const p = path.join(schemaDir, f);
@@ -94,7 +93,7 @@ for (const dir of ['bin', 'tools', 'test']) {
 const EXTERNAL_IDENTS = new Set([
   'partialFingerprints', // a SARIF field on the scanner's side of the boundary, not ours
 ]);
-const defined = new Set();
+const defined = new Set<string>();
 for (const f of fs.readdirSync(path.join(ROOT, 'bin')).filter((x) => /\.(cjs|ts)$/.test(x))) {
   const text = fs.readFileSync(path.join(ROOT, 'bin', f), 'utf8');
   for (const m of text.matchAll(/(?:function\s+|const\s+|let\s+)([A-Za-z_$][\w$]*)\s*(?::[^=;]+)?[=(<]/g)) {
@@ -117,7 +116,7 @@ for (const f of mdFiles) {
 }
 if (!phantom) ok(`all ${checked} identifiers cited in prose exist in bin/`);
 
-// Prose conventions live in tools/check-prose.cjs at the repository root, which covers every
+// Prose conventions live in tools/check-prose.ts at the repository root, which covers every
 // markdown file rather than only this skill. An earlier copy of the em dash rule lived here
 // and therefore never looked at design/, where 162 violations had accumulated unwatched.
 

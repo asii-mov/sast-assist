@@ -200,7 +200,7 @@ by the opt-in dynamic tier.
 
 `test/selftest.ts` runs the unit suite against real scanner fixtures. `test/e2e-witness.ts`
 boots the fixture app and proves the witness and the control end to end.
-`tools/validate-skill.cjs` checks this tree.
+`tools/validate-skill.ts` checks this tree.
 
 ## Anti-patterns
 

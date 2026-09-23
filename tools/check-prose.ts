@@ -1,14 +1,13 @@
 #!/usr/bin/env node
-'use strict';
 // House prose rules, checked instead of restated. Covers every tracked markdown file.
-// Run: node tools/check-prose.cjs [path ...]   (defaults to the whole repo)
+// Run: node tools/check-prose.ts [path ...]   (defaults to the whole repo)
 //
 // This exists because an earlier version of the em dash check lived inside the skill-tree
 // validator and therefore only ever looked at skills/. The design docs accumulated 162
 // violations that nothing was watching.
 
-const fs = require('fs');
-const path = require('path');
+import fs from 'fs';
+import path from 'path';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.work', 'reference', 'fixtures', '.claude']);
 
@@ -68,11 +67,13 @@ function walk(dir, out) {
   return out;
 }
 
+type Hit = { rule: string; why: string; line: number; text: string };
+
 function check(file) {
   const raw = fs.readFileSync(file, 'utf8');
   const text = maskCode(raw);
   const lines = raw.split('\n');
-  const hits = [];
+  const hits: Hit[] = [];
   for (const rule of RULES) {
     rule.re.lastIndex = 0;
     let m;
@@ -95,7 +96,7 @@ for (const f of targets.sort()) {
   if (!hits.length) continue;
   total += hits.length;
   console.log(`\n${path.relative(process.cwd(), f)}`);
-  const byRule = {};
+  const byRule: Record<string, Hit[]> = {};
   for (const h of hits) (byRule[h.rule] ||= []).push(h);
   for (const [id, hs] of Object.entries(byRule)) {
     console.log(`  ${id} (${hs.length}): ${hs[0].why}`);
