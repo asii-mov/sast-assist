@@ -54,7 +54,7 @@ The parent is the only writer of `run-metadata.json`, `findings/<id>.json`, `REM
 
 ## What runs today
 
-The deterministic core is built and tested. `bin/normalize.cjs`, `bin/validate.cjs`,
+The deterministic core is built and tested. `bin/normalize.ts`, `bin/validate.ts`,
 `bin/gate.ts`, `bin/stage.ts`, `bin/patch-guard.cjs`, and the `dynamic` tier of
 `bin/witness-run.cjs` all work and are covered by `test/run-all.sh`.
 
@@ -85,9 +85,9 @@ with the level it started at. A finding's saved `disposition` is its final outco
 report reads only that.
 Re-running the command is the resume path. There is no `--resume` flag and no `status` field to fall out of sync.
 
-**1. Scan and normalize.** Run the scanners, then `bin/normalize.cjs`. Read
+**1. Scan and normalize.** Run the scanners, then `bin/normalize.ts`. Read
 `references/INGEST.md` first, including its note on silent zeros. Validate with
-`bin/validate.cjs` against `schema/finding.schema.json`. Fix every error before continuing.
+`bin/validate.ts` against `schema/finding.schema.json`. Fix every error before continuing.
 
 **2. Pre-resolve without agents.** Path policy (test, vendor, generated, minified, migrations)
 and prior-run carry. Each resolved finding gets a real `Triage` with `established_by`, not a
@@ -188,7 +188,7 @@ All zero-dependency Node. Nothing is installed into the target.
 `bin/scan.cjs` runs the scanners, CodeQL once per detected language, and decides which rescan
 results a patch introduced. `bin/leak-guard.ts` holds `assertNoLeak`, the check that keeps
 scanner material out of fixer and auditor prompts.
-`bin/normalize.cjs` turns scanner output into findings. `bin/validate.cjs` gates every write
+`bin/normalize.ts` turns scanner output into findings. `bin/validate.ts` gates every write
 against a schema. `bin/gate.ts` holds the threshold and the ordering. `bin/patch-guard.cjs`
 screens a diff. `bin/stage.ts` holds `stageOf` and `evaluateVerification`, the only definitions of where a
 record is and whether a fix is verified. `bin/resume.cjs` picks the run directory, merges the

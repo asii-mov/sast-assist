@@ -1,6 +1,6 @@
 # Ingest
 
-Everything this system knows about scanner wire formats lives here and in `bin/normalize.cjs`.
+Everything this system knows about scanner wire formats lives here and in `bin/normalize.ts`.
 SARIF, `extra.metavars`, `partialFingerprints` and `security-severity` floats stop at this
 boundary. Nothing downstream imports a scanner type.
 
@@ -33,7 +33,7 @@ codeql database analyze <out>/scans/codeql-db-<lang> \
 
 The rescan in `bin/scan.cjs` runs these same commands with the run's recorded configuration.
 
-`normalize.cjs` reads Semgrep's JSON, not its SARIF, because the JSON carries
+`normalize.ts` reads Semgrep's JSON, not its SARIF, because the JSON carries
 `extra.metadata.likelihood`, `.impact` and `.confidence`, which the SARIF flattens away.
 
 ## Zero results does not mean clean

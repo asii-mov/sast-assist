@@ -1,8 +1,10 @@
 #!/usr/bin/env node
-'use strict';
 // JSON Schema subset validator. Zero dependencies, nothing installed into the target repo.
 // Supports the keywords our schemas use and refuses anything it does not understand, so an
 // unsupported keyword fails loudly instead of silently passing.
+
+import fs from 'fs';
+import path from 'path';
 
 const SUPPORTED = new Set([
   '$schema', '$id', '$ref', '$defs', 'title', 'description', 'type', 'const', 'enum',
@@ -31,9 +33,9 @@ function typeMatches(want, v) {
 const FILE_CACHE = new Map();
 
 function loadSchemaFile(file, baseDir) {
-  const abs = require('path').resolve(baseDir, file);
+  const abs = path.resolve(baseDir, file);
   if (!FILE_CACHE.has(abs)) {
-    FILE_CACHE.set(abs, JSON.parse(require('fs').readFileSync(abs, 'utf8')));
+    FILE_CACHE.set(abs, JSON.parse(fs.readFileSync(abs, 'utf8')));
   }
   return FILE_CACHE.get(abs);
 }
@@ -179,10 +181,9 @@ function validate(schema, data, baseDir) {
 function main(argv) {
   const [schemaPath, dataPath] = argv;
   if (!schemaPath || !dataPath) {
-    console.error('usage: validate.cjs <schema.json> <data.json>');
+    console.error('usage: validate.ts <schema.json> <data.json>');
     return 2;
   }
-  const fs = require('fs');
   for (const p of [schemaPath, dataPath]) {
     if (fs.statSync(p).size > LIMITS.bytes) {
       console.error(`${p}: exceeds ${LIMITS.bytes} byte limit`);
@@ -191,7 +192,7 @@ function main(argv) {
   }
   const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
   const data = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
-  const errs = validate(schema, data, require('path').dirname(schemaPath));
+  const errs = validate(schema, data, path.dirname(schemaPath));
   if (errs.length === 0) {
     console.log(`ok: ${dataPath} validates against ${schemaPath}`);
     return 0;
@@ -201,5 +202,5 @@ function main(argv) {
   return 1;
 }
 
-module.exports = { validate };
-if (require.main === module) process.exit(main(process.argv.slice(2)));
+export { validate };
+if (import.meta.main) process.exit(main(process.argv.slice(2)));

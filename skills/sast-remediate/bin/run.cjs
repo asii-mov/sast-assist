@@ -23,9 +23,9 @@ const AGENT_SCHEMA = path.join(ROOT, 'schema/agent-results.schema.json');
 
 const { stageOf, evaluateVerification, VERIFY_LEVELS, excused } = require('./stage.ts');
 const { gate, order } = require('./gate.ts');
-const { normalize, makeRepo } = require('./normalize.cjs');
+const { normalize, makeRepo } = require('./normalize.ts');
 const { runScanners, onPath, trim, baselineOf, rescan, DEFAULT_SCAN_CONFIG, SUITE_NAME, semgrepConfigArg, SCANNERS } = require('./scan.cjs');
-const { validate } = require('./validate.cjs');
+const { validate } = require('./validate.ts');
 const { guardDiff } = require('./patch-guard.cjs');
 const { defaultOutDir, readRecorded, mergeExisting, clearAttempt, incompleteReason } = require('./resume.cjs');
 const { assertNoLeak, leakError, recordTerms, authoredProse } = require('./leak-guard.ts');

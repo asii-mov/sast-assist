@@ -16,8 +16,8 @@ const SCHEMA_DIR = path.join(ROOT, 'schema');
 
 const R = require(path.join(ROOT, 'bin/run.cjs'));
 const S = require(path.join(ROOT, 'bin/scan.cjs'));
-const { normalize, makeRepo } = require(path.join(ROOT, 'bin/normalize.cjs'));
-const { validate } = require(path.join(ROOT, 'bin/validate.cjs'));
+const { normalize, makeRepo } = require(path.join(ROOT, 'bin/normalize.ts'));
+const { validate } = require(path.join(ROOT, 'bin/validate.ts'));
 const { VERIFY_LEVELS, stageOf } = require(path.join(ROOT, 'bin/stage.ts'));
 const { renderRemediation, renderHandoff } = require(path.join(ROOT, 'bin/report.cjs'));
 

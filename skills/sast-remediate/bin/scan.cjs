@@ -5,7 +5,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { normalize, makeRepo } = require('./normalize.cjs');
+const { normalize, makeRepo } = require('./normalize.ts');
 
 const ensureDir = (d) => fs.mkdirSync(d, { recursive: true });
 const readJson = (f) => JSON.parse(fs.readFileSync(f, 'utf8'));

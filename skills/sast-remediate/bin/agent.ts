@@ -9,7 +9,7 @@
 import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
-import { validate } from './validate.cjs';
+import { validate } from './validate.ts';
 
 const CLI = 'claude';
 const DEFAULT_TIMEOUT_MS = 300000;

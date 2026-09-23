@@ -58,7 +58,7 @@ for (const f of fs.readdirSync(path.join(ROOT, 'references'))) {
 ok('every reference file is cited by SKILL.md');
 
 // ---- schemas parse and refs resolve
-const { validate } = require(path.join(ROOT, 'bin/validate.cjs'));
+const { validate } = require(path.join(ROOT, 'bin/validate.ts'));
 const schemaDir = path.join(ROOT, 'schema');
 for (const f of fs.readdirSync(schemaDir)) {
   const p = path.join(schemaDir, f);

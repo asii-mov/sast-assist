@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-'use strict';
 // SARIF and Semgrep JSON in, Finding[] out. This is the ONLY module that knows either wire
 // format exists. Everything downstream sees domain types only.
 //
@@ -9,9 +8,9 @@
 // Both prefer a false split to a false merge. Triaging one root cause twice costs an agent
 // call. Merging two different bugs produces one contract that under-describes both.
 
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
+import fs from 'fs';
+import path from 'path';
+import crypto from 'crypto';
 
 const sha256 = (s) => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
 const collapseWs = (s) => s.replace(/\s+/g, ' ').trim();
@@ -46,7 +45,7 @@ const CWE_CLASS = {
 };
 
 // Fallback only. A rule id keyword is weaker evidence than a CWE, so it is consulted second.
-const RULE_KEYWORD_CLASS = [
+const RULE_KEYWORD_CLASS: [RegExp, string][] = [
   [/sql[-_.]?inject|sqli/i, 'injection.sql'],
   [/command[-_.]?inject|child[-_.]?process|shell[-_.]?inject|os[-_.]?command/i, 'injection.command'],
   [/path[-_.]?(inject|travers)|zip[-_.]?slip/i, 'injection.path'],
@@ -179,7 +178,7 @@ function fromSarif(sarif, repo, dropped) {
   const out = [];
   (sarif.runs || []).forEach((run, runIdx) => {
     const driver = (run.tool && run.tool.driver) || {};
-    const rules = new Map((driver.rules || []).map((r) => [r.id, r]));
+    const rules = new Map<string, any>((driver.rules || []).map((r) => [r.id, r]));
     (run.results || []).forEach((r, idx) => {
       const rule = rules.get(r.ruleId) || {};
       // security-severity and problem.severity live on the RULE, not the result.
@@ -401,11 +400,11 @@ function main(argv) {
     return i < 0 ? [a.replace(/^--/, ''), true] : [a.slice(2, i), a.slice(i + 1)];
   }));
   if (!args.repo) {
-    console.error('usage: normalize.cjs --repo=DIR [--semgrep=F.json] [--codeql=F.sarif] [--run=ID] [--out=F.json]');
+    console.error('usage: normalize.ts --repo=DIR [--semgrep=F.json] [--codeql=F.sarif] [--run=ID] [--out=F.json]');
     return 2;
   }
   const repo = makeRepo(args.repo);
-  const raw = {};
+  const raw: { semgrep?: unknown; codeql?: unknown } = {};
   if (args.semgrep) raw.semgrep = JSON.parse(fs.readFileSync(args.semgrep, 'utf8'));
   if (args.codeql) raw.codeql = JSON.parse(fs.readFileSync(args.codeql, 'utf8'));
   const res = normalize(raw, repo, args.run || 'run-1');
@@ -417,6 +416,6 @@ function main(argv) {
   return 0;
 }
 
-module.exports = {
+export {
   toRepoRelative, normalize, makeRepo, classify, extractCallee, enclosingSymbol, sha256, collapseWs };
-if (require.main === module) process.exit(main(process.argv.slice(2)));
+if (import.meta.main) process.exit(main(process.argv.slice(2)));

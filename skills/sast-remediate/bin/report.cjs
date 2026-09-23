@@ -142,7 +142,7 @@ function describeClaim(c) {
   return 'unrecognized claim';
 }
 
-// Location disagreement beyond a couple of lines is resolved upstream by normalize.cjs's two
+// Location disagreement beyond a couple of lines is resolved upstream by normalize.ts's two
 // folds (FOLD 1 merges within a locus, FOLD 2 merges by root cause), so by the time a report
 // runs there is no independent "the scanners picked different lines" signal left to read. What
 // remains, and is cheap because the record already holds it: one scanner's claim outranking
