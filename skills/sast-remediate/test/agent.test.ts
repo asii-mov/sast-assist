@@ -9,6 +9,7 @@ import os from 'os';
 import path from 'path';
 import assert from 'assert';
 import { runAgent, realExec, argvFor, extractJson } from '../bin/agent.ts';
+import type { AgentResult, ExecResult } from '../bin/agent.ts';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 
@@ -16,17 +17,17 @@ const SCHEMA = path.join(ROOT, 'schema/agent-results.schema.json');
 const TRIAGE = '#/$defs/triage';
 const TOOLS = ['Read'];
 
-const tests = [];
-const t = (name, fn) => tests.push([name, fn]);
-const section = (s) => tests.push([s, null]);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const tests: [string, (() => unknown) | null][] = [];
+const t = (name: string, fn: () => unknown) => tests.push([name, fn]);
+const section = (s: string) => tests.push([s, null]);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // A queued fake. It throws when the runner asks for a call the test did not queue, so an extra
 // retry is a failure rather than a silent reuse of the last answer.
-const fakeExec = (...runs) => {
+const fakeExec = (...runs: Partial<ExecResult>[]) => {
   const queue = [...runs];
-  const calls = [];
-  const exec = async (argv, opts) => {
+  const calls: Record<string, unknown>[] = [];
+  const exec = async (argv: string[], opts: { cwd?: string; timeoutMs: number }): Promise<ExecResult> => {
     calls.push({ argv, ...opts });
     if (!queue.length) throw new Error(`exec called ${calls.length} times, test queued ${runs.length}`);
     return { code: 0, stdout: '', stderr: '', timedOut: false, ...queue.shift() };
@@ -37,7 +38,10 @@ const fakeExec = (...runs) => {
 };
 
 // The shape observed from claude 2.1.278: an array of events, answer in the last result event.
-const envelope = (text, over = {}) => ({
+// The failure reason, or nothing when the call succeeded, for assertion messages.
+const reasonOf = (r: AgentResult) => (r.ok ? '' : r.reason);
+
+const envelope = (text: string, over = {}) => ({
   stdout: JSON.stringify([
     { type: 'system', subtype: 'init', session_id: 'x' },
     { type: 'assistant', message: {} },
@@ -56,7 +60,7 @@ section('envelope: the shape the real CLI prints');
 t('clean JSON in the result text validates and returns ok on one call', async () => {
   const exec = fakeExec(envelope(JSON.stringify(GOOD)));
   const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: TOOLS, exec });
-  assert.strictEqual(r.ok, true, r.reason);
+  assert.strictEqual(r.ok, true, reasonOf(r));
   assert.deepStrictEqual(r.data, GOOD);
   assert.strictEqual(exec.calls.length, 1);
 });
@@ -66,14 +70,14 @@ t('prose around the object is stripped, braces in the prose and nesting survive 
     JSON.stringify(GOOD)}\n\`\`\`\n\nHappy to re-check {if asked}.`;
   const exec = fakeExec(envelope(text));
   const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: TOOLS, exec });
-  assert.strictEqual(r.ok, true, r.reason);
+  assert.strictEqual(r.ok, true, reasonOf(r));
   assert.deepStrictEqual(r.data, GOOD);
 });
 
 t('a bare result object, not an array, is read the same way', async () => {
   const exec = fakeExec({ stdout: JSON.stringify({ type: 'result', subtype: 'success', result: JSON.stringify(GOOD) }) });
   const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: TOOLS, exec });
-  assert.strictEqual(r.ok, true, r.reason);
+  assert.strictEqual(r.ok, true, reasonOf(r));
 });
 
 t('is_error in the envelope is a failure even when the text parses', async () => {
@@ -97,7 +101,7 @@ section('discard and re-ask exactly once');
 t('malformed then good returns ok on the second call', async () => {
   const exec = fakeExec(envelope('I could not decide, sorry.'), envelope(JSON.stringify(GOOD)));
   const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: TOOLS, exec });
-  assert.strictEqual(r.ok, true, r.reason);
+  assert.strictEqual(r.ok, true, reasonOf(r));
   assert.deepStrictEqual(r.data, GOOD);
   assert.strictEqual(exec.calls.length, 2, 'the re-ask must be a fresh call');
 });
@@ -126,7 +130,7 @@ t('truncated JSON is discarded, never repaired into an object', async () => {
 t('a non-zero exit is re-asked once like any other discard', async () => {
   const exec = fakeExec({ code: 1, stderr: 'boom' }, envelope(JSON.stringify(GOOD)));
   const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: TOOLS, exec });
-  assert.strictEqual(r.ok, true, r.reason);
+  assert.strictEqual(r.ok, true, reasonOf(r));
   assert.strictEqual(exec.calls.length, 2);
 });
 
@@ -138,7 +142,7 @@ t('well formed JSON of the wrong shape is rejected, not returned', async () => {
   const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: TOOLS, exec });
   assert.strictEqual(r.ok, false);
   assert.match(r.reason, /schema:/);
-  assert.strictEqual(r.data, undefined, 'a schema failure must not leak data');
+  assert.strictEqual('data' in r ? r.data : undefined, undefined, 'a schema failure must not leak data');
 });
 
 t('a severity on a not_exploitable verdict is rejected', async () => {
@@ -153,7 +157,7 @@ t('a severity on a not_exploitable verdict is rejected', async () => {
 t('schema-invalid then valid returns the valid one', async () => {
   const exec = fakeExec(envelope('{"verdict":"nope"}'), envelope(JSON.stringify(GOOD)));
   const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: TOOLS, exec });
-  assert.strictEqual(r.ok, true, r.reason);
+  assert.strictEqual(r.ok, true, reasonOf(r));
   assert.strictEqual(exec.calls.length, 2);
 });
 
@@ -161,7 +165,7 @@ t('the fix pointer validates a fix envelope and rejects a triage one', async () 
   const fix = { outcome: 'cannot_fix', reason: 'the contract cannot be met here' };
   const okExec = fakeExec(envelope(JSON.stringify(fix)));
   const good = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: '#/$defs/fix', tools: TOOLS, exec: okExec });
-  assert.strictEqual(good.ok, true, good.reason);
+  assert.strictEqual(good.ok, true, reasonOf(good));
 
   const mixed = envelope(JSON.stringify(GOOD));
   const badExec = fakeExec(mixed, mixed);
@@ -172,6 +176,7 @@ t('the fix pointer validates a fix envelope and rejects a triage one', async () 
 t('a caller that names no schema is refused outright', async () => {
   const exec = fakeExec(envelope(JSON.stringify(GOOD)));
   await assert.rejects(
+    // @ts-expect-error the missing schema is the point of this check
     () => runAgent({ prompt: 'p', tools: TOOLS, exec }),
     /schemaPath/,
     'an unvalidated result is not a result',
@@ -242,6 +247,7 @@ t('every call is confined: the role\'s tools only, no MCP, dontAsk, file tools h
 
 t('a call with no tool list is refused before the CLI runs, because the default set has a shell', async () => {
   const exec = fakeExec();
+  // @ts-expect-error the missing tool list is the point of this check
   await assert.rejects(runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, exec }),
     /runAgent needs tools/);
   await assert.rejects(runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: [], exec }),
@@ -276,7 +282,7 @@ t('text with no object at all extracts nothing', () => {
   for (const [name, fn] of tests) {
     if (fn === null) { console.log(`\n${name}`); continue; }
     try { await fn(); pass++; console.log(`  ok   ${name}`); }
-    catch (e) { fail++; console.log(`  FAIL ${name}\n         ${e.message}`); }
+    catch (e) { fail++; console.log(`  FAIL ${name}\n         ${e instanceof Error ? e.message : e}`); }
   }
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);

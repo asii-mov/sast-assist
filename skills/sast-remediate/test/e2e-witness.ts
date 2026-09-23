@@ -13,6 +13,7 @@ import path from 'path';
 import assert from 'assert';
 import { discoverAppHarness, boot } from '../bin/app-harness.ts';
 import { runWitness, witnessObligations, freePort } from '../bin/witness-run.ts';
+import type { Witness } from '../schema/types.ts';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const FIXTURE = path.resolve(ROOT, '../../fixtures/vuln-app');
@@ -51,7 +52,7 @@ function read(req, res) {
 module.exports = { read };
 `;
 
-const witness = {
+const witness: Witness = {
   tier: 'dynamic',
   harness_id: 'npm_start',
   attack: { method: 'GET', path: '/files', headers: {}, query: { name: '../secret.txt' },
@@ -69,8 +70,8 @@ const witness = {
 
 // Pids whose working directory is inside `dir`. Every booted app runs from one of the trees
 // under the work dir, so an empty list means every app was shut down. Linux only (/proc).
-const runningUnder = (dir) => {
-  const out = [];
+const runningUnder = (dir: string) => {
+  const out: number[] = [];
   for (const pid of fs.readdirSync('/proc').filter((d) => /^\d+$/.test(d))) {
     try {
       const cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
@@ -80,7 +81,7 @@ const runningUnder = (dir) => {
   return out;
 };
 // A SIGKILL lands asynchronously, so give the kernel a moment before calling it a leak.
-const settle = async (dir) => {
+const settle = async (dir: string) => {
   for (let i = 0; i < 20 && runningUnder(dir).length; i++) await new Promise((r) => setTimeout(r, 100));
   return runningUnder(dir);
 };
@@ -88,7 +89,7 @@ const canSeeProcs = process.platform === 'linux' && fs.existsSync('/proc/self/cw
 
 (async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'sast-e2e-'));
-  const tree = (name, patch) => {
+  const tree = (name: string, patch: string | null) => {
     const d = path.join(work, name);
     fs.cpSync(FIXTURE, d, { recursive: true });
     if (patch) fs.writeFileSync(path.join(d, 'src/routes/files.js'), patch);
@@ -99,18 +100,20 @@ const canSeeProcs = process.platform === 'linux' && fs.existsSync('/proc/self/cw
   const harness = discoverAppHarness(base)[0];
 
   let pass = 0, fail = 0;
-  const pending = [];
-  const t = (n, fn) => {
-    const done = (e?: Error) => {
-      if (e) { fail++; console.log(`  FAIL ${n}\n         ${e.message}`); }
+  const pending: Promise<void>[] = [];
+  const t = (n: string, fn: () => unknown) => {
+    const done = (e?: unknown) => {
+      if (e) { fail++; console.log(`  FAIL ${n}\n         ${e instanceof Error ? e.message : e}`); }
       else { pass++; console.log(`  ok   ${n}`); }
     };
     try {
       const r = fn();
-      if (r && typeof r.then === 'function') pending.push(r.then(() => done(), done));
+      if (r instanceof Promise) pending.push(r.then(() => done(), done));
       else done();
     } catch (e) { done(e); }
   };
+  // Whether the control passed on the patched tree, or undefined when it never ran.
+  const controlPost = (r: Awaited<ReturnType<typeof runWitness>>) => (r.control.ran ? r.control.passed_post : undefined);
 
   try {
     assert.ok(harness, 'a harness must be discoverable for the fixture app');
@@ -120,7 +123,7 @@ const canSeeProcs = process.platform === 'linux' && fs.existsSync('/proc/self/cw
       const b = await boot(harness, base, { port: pb });
       const h = await boot(harness, dir, { port: ph });
       try {
-        assert.ok(b.ok && h.ok, `boot failed: ${b.why || h.why || ''}`);
+        assert.ok(b.ok && h.ok, `boot failed: ${b.ok ? '' : b.why}${h.ok ? '' : h.why}`);
         results[name] = await runWitness(witness, { base: b, head: h }, { allowDynamic: true });
       } finally { b.kill(); h.kill(); }
     }
@@ -137,7 +140,7 @@ const canSeeProcs = process.platform === 'linux' && fs.existsSync('/proc/self/cw
     });
     t('an honest fix stops the attack and keeps the control green', () => {
       assert.strictEqual(results.honest.post.signal, false);
-      assert.strictEqual(results.honest.control.passed_post, true);
+      assert.strictEqual(controlPost(results.honest), true);
       assert.strictEqual(results.honest.differential_ok, true);
       assert.strictEqual(results.honest.failure, null);
     });
@@ -147,7 +150,7 @@ const canSeeProcs = process.platform === 'linux' && fs.existsSync('/proc/self/cw
         'the attack does stop working, which is exactly the trap');
     });
     t('and is rejected by the functional control', () => {
-      assert.strictEqual(results.cheat.control.passed_post, false);
+      assert.strictEqual(controlPost(results.cheat), false);
       assert.strictEqual(results.cheat.control_ok, false);
       assert.strictEqual(results.cheat.failure, 'witness_control_failed');
     });
@@ -155,8 +158,9 @@ const canSeeProcs = process.platform === 'linux' && fs.existsSync('/proc/self/cw
       // Guards the deferral: a repo that happens to have a bootable app is never driven
       // by default. See design/FUTURE-IMPROVEMENTS.md.
       let threw = false;
+      // @ts-expect-error no trees: the call must refuse before it would need them
       try { await runWitness(witness, {}, {}); } catch (e) {
-        threw = /opt-in/.test(e.message);
+        threw = e instanceof Error && /opt-in/.test(e.message);
       }
       assert.ok(threw, 'runWitness must reject a dynamic witness without allowDynamic');
     });
@@ -170,7 +174,7 @@ const canSeeProcs = process.platform === 'linux' && fs.existsSync('/proc/self/cw
     });
     t('witnessObligations boots both trees and reports the honest fix as passing', () => {
       assert.strictEqual(obligations.differential_witness.status, 'pass');
-      assert.strictEqual(obligations.functional_control.status, 'pass');
+      assert.strictEqual(obligations.functional_control?.status, 'pass');
     });
     t('no app is left running after the witness shuts down', () => {
       if (!canSeeProcs) { console.log('         (skipped: no /proc on this platform)'); return; }
