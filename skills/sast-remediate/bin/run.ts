@@ -22,7 +22,19 @@ const AGENT_SCHEMA = path.join(ROOT, 'schema/agent-results.schema.json');
 
 import { stageOf, evaluateVerification, VERIFY_LEVELS, excused } from './stage.ts';
 import type { Patch, Verification, Evaluation, ObligationResult } from './stage.ts';
-import type { ScanConfig } from './scan.ts';
+import type { ScanConfig, ScannerStatus } from './scan.ts';
+import type { Obligation, VerifyLevel } from './stage.ts';
+import type { Policy } from './gate.ts';
+import type { AgentFailure } from './resume.ts';
+
+// run-metadata.json: written once per run by the parent, read by the report and by resume.
+type RunMeta = {
+  run_id: string; target: string; base_commit: string | null; policy: Policy;
+  verify_level: VerifyLevel; verify_obligations: readonly Obligation[]; skipped_obligations: Obligation[];
+  scan_config: ScanConfig; run_status: 'complete' | 'incomplete'; incomplete_reason: string | null;
+  agent_failures: AgentFailure[]; dropped: string[]; scanners: ScannerStatus[];
+  counts: Record<string, number>; started_at: string; finished_at: string;
+};
 import { gate, order } from './gate.ts';
 import { normalize, makeRepo } from './normalize.ts';
 import { runScanners, onPath, trim, baselineOf, rescan, DEFAULT_SCAN_CONFIG, SUITE_NAME, semgrepConfigArg, SCANNERS } from './scan.ts';
@@ -905,6 +917,7 @@ async function main(argv) {
   }
 }
 
+export type { RunMeta };
 export {
   bundleDef,
   leakError,

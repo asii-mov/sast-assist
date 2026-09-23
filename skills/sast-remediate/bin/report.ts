@@ -11,14 +11,23 @@ import { VERIFY_LEVELS, OBLIGATIONS } from './stage.ts';
 import { claimedRank } from './gate.ts';
 import fs from 'fs';
 import path from 'path';
+import type { Disposition, FindingRecord, Obligation, Verification } from './stage.ts';
+import type { ClaimedSeverity, SecurityContract } from '../schema/types.ts';
+import type { ScannerStatus } from './scan.ts';
+import type { RunMeta } from './run.ts';
+
+type State = Disposition['state'];
+// A finding filed under one of `S`, so its disposition is known to be one of those states.
+type In<S extends State> = FindingRecord & { disposition: Extract<Disposition, { state: S }> };
+type Cell = string | number;
 
 // ---------------------------------------------------------------------- markdown primitives
 
-const cellText = (s) => String(s).replace(/\r?\n/g, ' ').replace(/\|/g, '\\|');
-const code = (s) => `\`${s}\``;
-const noun = (n, singular, plural?: string) => `${n} ${n === 1 ? singular : (plural || `${singular}s`)}`;
+const cellText = (s: Cell) => String(s).replace(/\r?\n/g, ' ').replace(/\|/g, '\\|');
+const code = (s: unknown) => `\`${s}\``;
+const noun = (n: number, singular: string, plural?: string) => `${n} ${n === 1 ? singular : (plural || `${singular}s`)}`;
 
-function table(headers, rows) {
+function table(headers: string[], rows: Cell[][]): string {
   if (!rows.length) return '_none._\n';
   const head = `| ${headers.join(' | ')} |`;
   const sep = `| ${headers.map(() => '---').join(' | ')} |`;
@@ -26,7 +35,7 @@ function table(headers, rows) {
   return `${head}\n${sep}\n${body}\n`;
 }
 
-function truncate(text, max) {
+function truncate(text: unknown, max: number): string {
   const t = String(text).replace(/\s+/g, ' ').trim();
   return t.length > max ? `${t.slice(0, max - 3).trimEnd()}...` : t;
 }
@@ -37,18 +46,25 @@ function truncate(text, max) {
 // not `contract`, precisely so a hypothesis can never be mistaken for an established one by a
 // reader who only checks the field name). Reading either through one accessor is safe here
 // because both call sites already gate on which verdict they are looking at.
-const contractOf = (f) => f.triage && (f.triage.contract || f.triage.hypothesis);
+const contractOf = (f: FindingRecord): SecurityContract | null => {
+  if (!f.triage) return null;
+  if (f.triage.verdict === 'exploitable') return f.triage.contract;
+  if (f.triage.verdict === 'undecidable') return f.triage.hypothesis;
+  return null;
+};
+// Only an exploitable finding carries a severity; every state that shows one implies that verdict.
+const severityOf = (f: FindingRecord) => (f.triage?.verdict === 'exploitable' ? f.triage.severity : 'none');
 
-function primarySite(f) { return f.sites[0]; }
+function primarySite(f: FindingRecord) { return f.sites[0]; }
 
-function titleFor(f) {
+function titleFor(f: FindingRecord): string {
   const c = contractOf(f);
   if (c) return truncate(c.invariant, 100);
   const s = primarySite(f);
   return `${f.invariant_class} at ${code(`${s.locus.file}:${s.locus.line_at_scan}`)}`;
 }
 
-function boundaryFor(f) {
+function boundaryFor(f: FindingRecord): string {
   const c = contractOf(f);
   if (c && c.enforcement_point) {
     const ep = c.enforcement_point;
@@ -66,27 +82,27 @@ function boundaryFor(f) {
 
 // bin/run.ts judges each finding once, with the run's verify level. A finding it has not
 // judged yet is `pending`.
-function byState(findings) {
-  const groups = new Map();
+function byState(findings: FindingRecord[]) {
+  const groups = new Map<State | 'pending', FindingRecord[]>();
   for (const f of findings) {
     const state = f.disposition ? f.disposition.state : 'pending';
-    if (!groups.has(state)) groups.set(state, []);
-    groups.get(state).push(f);
+    groups.set(state, [...(groups.get(state) || []), f]);
   }
-  return (...states) => states.flatMap((s) => groups.get(s) || []);
+  // Grouped by disposition.state above, so each group holds exactly the states asked for.
+  return <S extends State>(...states: S[]) => states.flatMap((s) => groups.get(s) || []) as In<S>[];
 }
 
-const lastPatch = (f) => f.patches[f.patches.length - 1];
-const requiredFor = (meta) => VERIFY_LEVELS[meta.verify_level] || [];
-const obligationList = (names) => (names.length ? names.map(code).join(', ') : 'none');
-const branchCell = (d) => (d.branch ? code(d.branch) : 'none');
+const lastPatch = (f: FindingRecord) => f.patches[f.patches.length - 1];
+const requiredFor = (meta: RunMeta) => VERIFY_LEVELS[meta.verify_level] || [];
+const obligationList = (names: readonly string[]) => (names.length ? names.map(code).join(', ') : 'none');
+const branchCell = (d: { branch: string | null }) => (d.branch ? code(d.branch) : 'none');
 
 // The one sentence this whole file protects. "Verified" alone is exactly the phrase that
 // erases the difference between cheap and full, so it never appears without the level and the
 // skipped obligations named beside it. `unavailable` is named too: only the obligations in
 // bin/stage.ts MAY_BE_UNAVAILABLE may land there, and an excused obligation is not a passed one.
-function verificationSummary(d) {
-  const parts = [];
+function verificationSummary(d: Extract<Disposition, { state: 'fixed' | 'fixed_unwitnessed' }>): string {
+  const parts: string[] = [];
   if (d.skipped_obligations.length === 0) {
     parts.push(`verified at ${code('full')}: all seven obligations ${d.unavailable.length ? 'checked' : 'passed'}`);
   } else {
@@ -100,28 +116,30 @@ function verificationSummary(d) {
   return parts.join('; ');
 }
 
-function obligationCell(f, name, read) {
+function obligationCell(f: In<'fixed' | 'fixed_unwitnessed'>, name: Obligation, read: (o: { status?: string }) => string): string {
   if (f.disposition.skipped_obligations.includes(name)) return 'skipped at this verify level';
-  return read(lastPatch(f).verification[name] || {});
+  return read(lastPatch(f).verification?.[name] || {});
 }
 
-function failureDetail(rawVerification, name) {
-  const o = rawVerification && rawVerification[name];
+// Saved verification records vary by obligation and by the version that wrote them, so any
+// detail field is read if present.
+function failureDetail(rawVerification: Verification | null, name: Obligation): string {
+  const o: Record<string, unknown> | undefined = rawVerification?.[name];
   if (!o) return 'no detail recorded';
-  if (o.detail) return o.detail;
-  if (o.reason) return o.reason;
-  if (o.explanation) return o.explanation;
+  if (o.detail) return String(o.detail);
+  if (o.reason) return String(o.reason);
+  if (o.explanation) return String(o.explanation);
   if (Array.isArray(o.violations) && o.violations.length) return o.violations.join('; ');
   return `status ${o.status}`;
 }
 
-function whyNotFixed(d) {
+function whyNotFixed(d: Extract<Disposition, { state: 'fix_declined' | 'fix_failed' }>): string {
   if (d.state === 'fix_declined') return `the fixer declined: ${d.reason}`;
   if (d.outcome !== 'patched') return `${code(d.outcome)}: ${d.detail || 'no detail recorded'}`;
   return `failed on ${obligationList([...d.failed, ...d.missing])}`;
 }
 
-function attemptSummary(p) {
+function attemptSummary(p: FindingRecord['patches'][number]): string {
   if (p.outcome !== 'patched') return `attempt ${p.attempt}: ${p.outcome}`;
   const failed = (p.typed_failures || []).map((x) => x.obligation);
   return `attempt ${p.attempt}: ${failed.length ? `failed on ${obligationList(failed)}` : 'passed its checks'}`;
@@ -129,7 +147,7 @@ function attemptSummary(p) {
 
 // ---------------------------------------------------------------------- scanner disagreement
 
-function describeClaim(c) {
+function describeClaim(c: ClaimedSeverity): string {
   if (c.kind === 'semgrep') {
     return (c.likelihood || c.impact)
       ? `severity ${c.severity} (likelihood ${c.likelihood || 'n/a'}, impact ${c.impact || 'n/a'})`
@@ -148,8 +166,8 @@ function describeClaim(c) {
 // runs there is no independent "the scanners picked different lines" signal left to read. What
 // remains, and is cheap because the record already holds it: one scanner's claim outranking
 // another's at the same site, and a site only one scanner ever reported.
-function scannerDisagreements(findings) {
-  const out = [];
+function scannerDisagreements(findings: FindingRecord[]) {
+  const out: { finding: string; file: string; line: number; detail: string }[] = [];
   for (const f of findings) {
     for (const s of f.sites) {
       const obs = s.observations;
@@ -168,7 +186,8 @@ function scannerDisagreements(findings) {
   return out;
 }
 
-function describeScanners(scanners) {
+// Older runs recorded a scanner as a bare name, or with a version and an error.
+function describeScanners(scanners: (string | (ScannerStatus & { version?: string; error?: string }))[] | undefined): string {
   if (!scanners || !scanners.length) return 'none recorded';
   return scanners.map((s) => {
     if (typeof s === 'string') return code(s);
@@ -181,18 +200,18 @@ function describeScanners(scanners) {
 
 // ---------------------------------------------------------------------- REMEDIATION.md
 
-function renderRemediation(findings, meta) {
+function renderRemediation(findings: FindingRecord[], meta: RunMeta): string {
   const of = byState(findings);
   const fixed = of('fixed');
   const unwitnessed = of('fixed_unwitnessed');
   const shipped = of('fixed', 'fixed_unwitnessed');
-  const pending = of('pending');
-  const rejected = new Map();
+  const pending = findings.filter((f) => !f.disposition);
+  const rejected = new Map<string, FindingRecord[]>();
   for (const f of of('rejected').filter((x) => !x.disposition.policy)) {
     rejected.set(f.disposition.reason, [...(rejected.get(f.disposition.reason) || []), f]);
   }
   const triagedCount = findings.filter((f) => f.triage).length;
-  const L = [];
+  const L: string[] = [];
 
   L.push(`# Remediation report: ${code(meta.target)}`, '');
   L.push('**1. Run header.**', '');
@@ -249,9 +268,9 @@ function renderRemediation(findings, meta) {
     L.push('No findings were fixed and verified this run.');
   } else {
     const rows = fixed.map((f) => [
-      code(f.id), code(f.triage.severity), titleFor(f), boundaryFor(f),
+      code(f.id), code(severityOf(f)), titleFor(f), boundaryFor(f),
       obligationCell(f, 'differential_witness', (o) => `${code(f.disposition.witness_tier)}: ${o.status || 'unknown'}`),
-      obligationCell(f, 'hostile_auditor', () => code(lastPatch(f).audit.verdict)),
+      obligationCell(f, 'hostile_auditor', () => code(lastPatch(f).audit?.verdict)),
     ]);
     L.push(table(['id', 'severity', 'title', 'boundary', 'witness', 'audit'], rows), '');
     for (const f of fixed) L.push(`- ${code(f.id)}: ${verificationSummary(f.disposition)}.`);
@@ -263,7 +282,7 @@ function renderRemediation(findings, meta) {
   } else {
     L.push(`These patches passed the checks this run asked for, but the ${code('argued')} tier has no `
       + 'mechanical witness, so no check showed the attack stop. Review each one by hand.', '');
-    const rows = unwitnessed.map((f) => [code(f.id), code(f.triage.severity), titleFor(f), branchCell(f.disposition)]);
+    const rows = unwitnessed.map((f) => [code(f.id), code(severityOf(f)), titleFor(f), branchCell(f.disposition)]);
     L.push(table(['id', 'severity', 'title', 'branch'], rows), '');
     for (const f of unwitnessed) L.push(`- ${code(f.id)}: ${verificationSummary(f.disposition)}.`);
   }
@@ -282,7 +301,7 @@ function renderRemediation(findings, meta) {
   if (!shipped.length) {
     L.push('No findings were patched this run, so there is no evidence mix to report.');
   } else {
-    const counts = new Map();
+    const counts = new Map<string, number>();
     for (const f of shipped) counts.set(f.disposition.witness_tier, (counts.get(f.disposition.witness_tier) || 0) + 1);
     const rows = [...counts.entries()].sort((x, y) => y[1] - x[1]).map(([tier, n]) => [code(tier), n]);
     L.push(table(['witness tier', 'count'], rows));
@@ -315,7 +334,7 @@ function renderRemediation(findings, meta) {
   const policyRejected = of('rejected').filter((f) => f.disposition.policy);
   if (policyRejected.length) {
     const rows = policyRejected.map((f) => [code(f.id), boundaryFor(f),
-      truncate(f.triage.refutation.explanation, 100)]);
+      truncate(f.triage?.verdict === 'not_exploitable' ? f.triage.refutation.explanation : '', 100)]);
     L.push(table(['id', 'matched', 'why'], rows));
   } else {
     L.push('No findings were rejected by path policy this run.');
@@ -326,7 +345,7 @@ function renderRemediation(findings, meta) {
   if (!below.length) {
     L.push('No exploitable findings fell below the fix threshold this run.');
   } else {
-    const rows = below.map((f) => [code(f.id), code(f.triage.severity), titleFor(f), boundaryFor(f)]);
+    const rows = below.map((f) => [code(f.id), code(severityOf(f)), titleFor(f), boundaryFor(f)]);
     L.push(table(['id', 'severity', 'title', 'boundary'], rows));
   }
 
@@ -348,7 +367,8 @@ function renderRemediation(findings, meta) {
   } else {
     const rows = shipped.map((f) => {
       if (f.disposition.skipped_obligations.includes('no_new_findings')) return [code(f.id), 'rescan skipped at this verify level'];
-      const absent = (lastPatch(f).verification.rescan || {}).original_absent;
+      const rescan = lastPatch(f).verification?.rescan as { original_absent?: boolean | null } | undefined;
+      const absent = rescan?.original_absent;
       const status = absent === null ? 'the rescan produced no output'
         : absent ? 'scanner is quiet on the original rule' : 'scanner still fires on the original rule';
       return [code(f.id), `${status} (observation only; the outcome above does not depend on this)`];
@@ -361,10 +381,10 @@ function renderRemediation(findings, meta) {
 
 // ---------------------------------------------------------------------- HANDOFF.md
 
-function renderHandoff(findings, meta) {
+function renderHandoff(findings: FindingRecord[], meta: RunMeta): string {
   const of = byState(findings);
   const auditRequired = requiredFor(meta).includes('hostile_auditor');
-  const L = [];
+  const L: string[] = [];
 
   L.push(`# Handoff: ${code(meta.target)}`, '');
   L.push(`Run ${code(meta.run_id)}, verify level ${code(meta.verify_level || 'unspecified')}. `
@@ -381,7 +401,7 @@ function renderHandoff(findings, meta) {
     for (const f of notFixed) {
       const d = f.disposition;
       const last = lastPatch(f);
-      L.push(`- ${code(f.id)} (${code(f.triage.severity)}): branch ${branchCell(d)}, `
+      L.push(`- ${code(f.id)} (${code(severityOf(f))}): branch ${branchCell(d)}, `
         + `${noun(f.patches.length, 'attempt')} made. ${titleFor(f)}`);
       L.push(`  Why: ${whyNotFixed(d)}.`);
       if (d.state === 'fix_failed' && d.outcome === 'patched') {
@@ -404,6 +424,7 @@ function renderHandoff(findings, meta) {
     L.push('No finding is undecidable this run.');
   } else {
     for (const f of undecidable) {
+      if (f.triage?.verdict !== 'undecidable') continue;
       L.push(`- ${code(f.id)}: ${f.triage.blocker.missing_fact}`);
       L.push(`  Resolve by ${code(f.triage.blocker.resolve_by)}: ${f.triage.blocker.plan}`);
       L.push('  This is a hypothesis, not a confirmed vulnerability, and carries no severity.');
@@ -416,9 +437,9 @@ function renderHandoff(findings, meta) {
     L.push('No finding landed on the argued tier this run.');
   } else {
     for (const f of unwitnessed) {
-      const w = contractOf(f).witness;
-      L.push(`- ${code(f.id)} (${code(f.triage.severity)}): ${titleFor(f)}`);
-      L.push(`  Obstacle: ${code(w.obstacle)}. ${w.why}`);
+      const w = contractOf(f)?.witness;
+      L.push(`- ${code(f.id)} (${code(severityOf(f))}): ${titleFor(f)}`);
+      if (w?.tier === 'argued') L.push(`  Obstacle: ${code(w.obstacle)}. ${w.why}`);
       L.push(`  Branch: ${branchCell(f.disposition)}.`);
     }
   }

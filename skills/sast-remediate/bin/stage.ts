@@ -95,8 +95,12 @@ type Disposition =
   | { state: 'fix_declined'; reason?: string; branch: string }
   | { state: 'fix_failed'; branch: string | null; attempts: number; outcome: Patch['outcome']; detail?: string;
       failed: Obligation[]; missing: Obligation[]; worktree: string }
-  | { state: 'fixed' | 'fixed_unwitnessed'; branch: string; verify_level: VerifyLevel; skipped_obligations: Obligation[];
-      unavailable: Obligation[]; witness_tier: string };
+  | ({ state: 'fixed' } & Verified)
+  | ({ state: 'fixed_unwitnessed' } & Verified);
+
+type Verified = {
+  branch: string; verify_level: VerifyLevel; skipped_obligations: Obligation[]; unavailable: Obligation[]; witness_tier: string;
+};
 
 type Evaluation = { verified: boolean; failed: Obligation[]; unavailable: Obligation[]; missing: Obligation[]; skipped: Obligation[] };
 
