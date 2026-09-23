@@ -18,7 +18,7 @@ const FIXTURE = path.resolve(ROOT, '../../fixtures/vuln-app');
 const SCANS = path.join(ROOT, 'test/fixtures');
 const R = require(path.join(ROOT, 'bin/run.cjs'));
 const { runAgent } = require(path.join(ROOT, 'bin/agent.ts'));
-const { renderRemediation, renderHandoff } = require(path.join(ROOT, 'bin/report.cjs'));
+const { renderRemediation, renderHandoff } = require(path.join(ROOT, 'bin/report.ts'));
 
 const PATH_ID = 'f_6ed43412e0d9b09d';
 const COMMAND_ID = 'f_d72e46f6d1ec2eb0';

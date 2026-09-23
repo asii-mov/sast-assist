@@ -15,11 +15,11 @@ const REPO = path.resolve(ROOT, '../../fixtures/vuln-app');
 const SCHEMA_DIR = path.join(ROOT, 'schema');
 
 const R = require(path.join(ROOT, 'bin/run.cjs'));
-const S = require(path.join(ROOT, 'bin/scan.cjs'));
+const S = require(path.join(ROOT, 'bin/scan.ts'));
 const { normalize, makeRepo } = require(path.join(ROOT, 'bin/normalize.ts'));
 const { validate } = require(path.join(ROOT, 'bin/validate.ts'));
 const { VERIFY_LEVELS, stageOf } = require(path.join(ROOT, 'bin/stage.ts'));
-const { renderRemediation, renderHandoff } = require(path.join(ROOT, 'bin/report.cjs'));
+const { renderRemediation, renderHandoff } = require(path.join(ROOT, 'bin/report.ts'));
 
 const readJson = (f) => JSON.parse(fs.readFileSync(f, 'utf8'));
 
@@ -1486,7 +1486,7 @@ t("the rescan analyses the baseline's languages, not whatever the patch left beh
   const deps = codeqlDeps(['python']);
   const opts = scanOpts();
   const base = S.runScanners(opts, deps, target, path.join(tmp(), 'scans'));
-  // baselineOf's third argument stays scanConfig (bin/scan.cjs, R3); languages ride alongside it
+  // baselineOf's third argument stays scanConfig (bin/scan.ts, R3); languages ride alongside it
   // as a fourth argument, taken from the codeql scanner entry rather than replacing scanConfig.
   const baseline = S.baselineOf(base.raw, [], opts.scanConfig, base.scanners);
   assert.deepStrictEqual(baseline.languages, ['javascript']);

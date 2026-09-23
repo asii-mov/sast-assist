@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-'use strict';
 // Running the scanners, once on the target and again on each patched worktree, and deciding
 // what a rescan says about the patch.
 
-const fs = require('fs');
-const path = require('path');
-const { normalize, makeRepo } = require('./normalize.ts');
+import fs from 'fs';
+import path from 'path';
+import { normalize, makeRepo } from './normalize.ts';
+import type { RawScans } from './normalize.ts';
 
 const ensureDir = (d) => fs.mkdirSync(d, { recursive: true });
 const readJson = (f) => JSON.parse(fs.readFileSync(f, 'utf8'));
@@ -30,7 +30,7 @@ const onPath = (bin) => (process.env.PATH || '').split(path.delimiter)
 
 const SCANNERS = ['semgrep', 'codeql'];
 
-const LANGS = [
+const LANGS: [lang: string, exts: string[], markers: string[]][] = [
   // [codeql language, source extensions, root markers]
   ['javascript', ['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx'], ['package.json']],
   ['python', ['.py'], ['pyproject.toml', 'requirements.txt', 'setup.py']],
@@ -89,7 +89,7 @@ function detectLanguages(root) {
 // A scanner that is absent or exits non-zero is recorded and the run continues with what it has.
 // Both failing is fatal, because normalizing nothing would report a clean repository.
 function runScanners(opts, deps, target, scanDir) {
-  const raw = {};
+  const raw: RawScans = {};
   const scanners = [];
 
   if (opts.scans) {
@@ -190,7 +190,7 @@ function rescan(finding, worktree, scanDir, { deps, runId, baseline }) {
   };
 }
 
-module.exports = {
+export {
   runScanners, detectLanguages, onPath, trim, baselineOf, rescan,
   DEFAULT_SCAN_CONFIG, SUITE_NAME, semgrepConfigArg, parseScanConfig, SCANNERS,
 };

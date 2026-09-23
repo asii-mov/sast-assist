@@ -12,6 +12,9 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 
+// Scanner output as read from disk, before normalize() parses it.
+type RawScans = { semgrep?: unknown; codeql?: unknown };
+
 const sha256 = (s) => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
 const collapseWs = (s) => s.replace(/\s+/g, ' ').trim();
 
@@ -404,7 +407,7 @@ function main(argv) {
     return 2;
   }
   const repo = makeRepo(args.repo);
-  const raw: { semgrep?: unknown; codeql?: unknown } = {};
+  const raw: RawScans = {};
   if (args.semgrep) raw.semgrep = JSON.parse(fs.readFileSync(args.semgrep, 'utf8'));
   if (args.codeql) raw.codeql = JSON.parse(fs.readFileSync(args.codeql, 'utf8'));
   const res = normalize(raw, repo, args.run || 'run-1');
@@ -416,6 +419,7 @@ function main(argv) {
   return 0;
 }
 
+export type { RawScans };
 export {
   toRepoRelative, normalize, makeRepo, classify, extractCallee, enclosingSymbol, sha256, collapseWs };
 if (import.meta.main) process.exit(main(process.argv.slice(2)));

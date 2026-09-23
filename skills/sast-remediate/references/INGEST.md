@@ -16,7 +16,7 @@ semgrep scan --config <each --semgrep-config value, default p/default> \
 ```
 
 CodeQL needs a database per language, then an analyze pass per database. `detectLanguages` in
-`bin/scan.cjs` picks the languages from the source files it finds (a bounded walk that skips
+`bin/scan.ts` picks the languages from the source files it finds (a bounded walk that skips
 `node_modules`, `vendor`, build output and dot directories), plus `actions` when
 `.github/workflows` holds a workflow. A root marker such as `package.json` alone does not count,
 because `codeql database create` fails on a language with no code. Each language's SARIF is
@@ -31,7 +31,7 @@ codeql database analyze <out>/scans/codeql-db-<lang> \
   'codeql/<lang>-queries:codeql-suites/<lang>-<--codeql-suite, default security-extended>.qls'
 ```
 
-The rescan in `bin/scan.cjs` runs these same commands with the run's recorded configuration.
+The rescan in `bin/scan.ts` runs these same commands with the run's recorded configuration.
 
 `normalize.ts` reads Semgrep's JSON, not its SARIF, because the JSON carries
 `extra.metadata.likelihood`, `.impact` and `.confidence`, which the SARIF flattens away.

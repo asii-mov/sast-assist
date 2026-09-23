@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-'use strict';
 // REMEDIATION.md and HANDOFF.md, built only from finding records and the run's meta.
 // Each finding's saved disposition is its outcome; this module files it under that and never
 // re-judges a patch. The seven-obligation model is easy to describe correctly
@@ -8,14 +7,16 @@
 // path-policy rejection is a scope decision and not a security claim, rescan quiet is an
 // observation and never a verdict, and only an exploitable finding ever carries a severity.
 
-const { VERIFY_LEVELS, OBLIGATIONS } = require('./stage.ts');
-const { claimedRank } = require('./gate.ts');
+import { VERIFY_LEVELS, OBLIGATIONS } from './stage.ts';
+import { claimedRank } from './gate.ts';
+import fs from 'fs';
+import path from 'path';
 
 // ---------------------------------------------------------------------- markdown primitives
 
 const cellText = (s) => String(s).replace(/\r?\n/g, ' ').replace(/\|/g, '\\|');
 const code = (s) => `\`${s}\``;
-const noun = (n, singular, plural) => `${n} ${n === 1 ? singular : (plural || `${singular}s`)}`;
+const noun = (n, singular, plural?: string) => `${n} ${n === 1 ? singular : (plural || `${singular}s`)}`;
 
 function table(headers, rows) {
   if (!rows.length) return '_none._\n';
@@ -425,14 +426,12 @@ function renderHandoff(findings, meta) {
   return `${L.join('\n')}\n`;
 }
 
-module.exports = { renderRemediation, renderHandoff };
+export { renderRemediation, renderHandoff };
 
-if (require.main === module) {
-  const fs = require('fs');
-  const path = require('path');
+if (import.meta.main) {
   const [findingsFile, metaFile, outDir] = process.argv.slice(2);
   if (!findingsFile || !metaFile) {
-    console.error('usage: report.cjs <findings.json> <meta.json> [outDir]');
+    console.error('usage: report.ts <findings.json> <meta.json> [outDir]');
     process.exit(2);
   }
   const findings = JSON.parse(fs.readFileSync(findingsFile, 'utf8'));

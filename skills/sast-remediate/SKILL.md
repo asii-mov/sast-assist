@@ -60,7 +60,7 @@ The deterministic core is built and tested. `bin/normalize.ts`, `bin/validate.ts
 
 `bin/run.cjs` drives them. One command runs every stage: `run.cjs --target=DIR`. It spawns the
 triage and fix agents through `bin/agent.ts`, orders fix work with `order()` from `bin/gate.ts`,
-and writes the artifacts with `bin/report.cjs`. Re-running it is the resume path.
+and writes the artifacts with `bin/report.ts`. Re-running it is the resume path.
 Agents run with the target's Claude settings, `CLAUDE.md` and hooks shut out. Each gets only the
 tools its role needs, and none gets a shell. The harness, not the fixer, commits each fix, and
 only the files the fixer declared. See `references/FIX-AND-VERIFY.md`.
@@ -185,13 +185,13 @@ proven but is **not enabled by default**. It is opt-in, tracked in
 
 All zero-dependency Node. Nothing is installed into the target.
 
-`bin/scan.cjs` runs the scanners, CodeQL once per detected language, and decides which rescan
+`bin/scan.ts` runs the scanners, CodeQL once per detected language, and decides which rescan
 results a patch introduced. `bin/leak-guard.ts` holds `assertNoLeak`, the check that keeps
 scanner material out of fixer and auditor prompts.
 `bin/normalize.ts` turns scanner output into findings. `bin/validate.ts` gates every write
 against a schema. `bin/gate.ts` holds the threshold and the ordering. `bin/patch-guard.ts`
 screens a diff. `bin/stage.ts` holds `stageOf` and `evaluateVerification`, the only definitions of where a
-record is and whether a fix is verified. `bin/resume.cjs` picks the run directory, merges the
+record is and whether a fix is verified. `bin/resume.ts` picks the run directory, merges the
 records already on disk, and clears the leftovers of an attempt that a crashed run never
 recorded. `bin/witness-run.ts` runs the differential witness
 and the control.

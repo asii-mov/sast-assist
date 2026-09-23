@@ -24,10 +24,10 @@ const AGENT_SCHEMA = path.join(ROOT, 'schema/agent-results.schema.json');
 const { stageOf, evaluateVerification, VERIFY_LEVELS, excused } = require('./stage.ts');
 const { gate, order } = require('./gate.ts');
 const { normalize, makeRepo } = require('./normalize.ts');
-const { runScanners, onPath, trim, baselineOf, rescan, DEFAULT_SCAN_CONFIG, SUITE_NAME, semgrepConfigArg, SCANNERS } = require('./scan.cjs');
+const { runScanners, onPath, trim, baselineOf, rescan, DEFAULT_SCAN_CONFIG, SUITE_NAME, semgrepConfigArg, SCANNERS } = require('./scan.ts');
 const { validate } = require('./validate.ts');
 const { guardDiff } = require('./patch-guard.ts');
-const { defaultOutDir, readRecorded, mergeExisting, clearAttempt, incompleteReason } = require('./resume.cjs');
+const { defaultOutDir, readRecorded, mergeExisting, clearAttempt, incompleteReason } = require('./resume.ts');
 const { assertNoLeak, leakError, recordTerms, authoredProse } = require('./leak-guard.ts');
 
 // --out is operator-controlled and git rejects spaces, `~ ^ : ? * [ \\`, `..` and a leading dot.
@@ -134,8 +134,8 @@ function realDeps() {
   const lazy = (mod, name) => (...a) => require(mod)[name](...a);
   return {
     runAgent: lazy('./agent.ts', 'runAgent'),
-    renderRemediation: lazy('./report.cjs', 'renderRemediation'),
-    renderHandoff: lazy('./report.cjs', 'renderHandoff'),
+    renderRemediation: lazy('./report.ts', 'renderRemediation'),
+    renderHandoff: lazy('./report.ts', 'renderHandoff'),
     exec: realExec,
     onPath,
     log: (m) => console.error(m),

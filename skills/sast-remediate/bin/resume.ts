@@ -1,13 +1,12 @@
 #!/usr/bin/env node
-'use strict';
 // What one run leaves for the next, and how the next one picks it up. Re-running the command is
 // the resume path, so every function here answers "what if the last run stopped here?"
 
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
-const { VERIFY_LEVELS } = require('./stage.ts');
-const { trim, parseScanConfig } = require('./scan.cjs');
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { VERIFY_LEVELS } from './stage.ts';
+import { trim, parseScanConfig } from './scan.ts';
 
 const readJson = (f) => JSON.parse(fs.readFileSync(f, 'utf8'));
 
@@ -22,7 +21,7 @@ function defaultOutDir(target, base, root = path.join(os.homedir(), 'sast-remedi
   if (!nums.length) return path.join(dir, 'run-1');
   const latest = Math.max(...nums);
   const latestDir = path.join(dir, `run-${latest}`);
-  let meta = {};
+  let meta: { base_commit?: string; run_status?: string } = {};
   try { meta = readJson(path.join(latestDir, 'run-metadata.json')) || {}; } catch { /* died before writing it */ }
   const sameBase = meta.base_commit === undefined || meta.base_commit === base;
   return meta.run_status !== 'complete' && sameBase ? latestDir : path.join(dir, `run-${latest + 1}`);
@@ -94,4 +93,4 @@ function incompleteReason({ degraded, unresolved, budget, deferred, failures }) 
   return parts.length ? parts.join('; ') : null;
 }
 
-module.exports = { defaultOutDir, readRecorded, reopenAgentFailure, mergeExisting, clearAttempt, incompleteReason };
+export { defaultOutDir, readRecorded, reopenAgentFailure, mergeExisting, clearAttempt, incompleteReason };

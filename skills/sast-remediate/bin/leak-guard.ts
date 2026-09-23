@@ -2,7 +2,7 @@
 // This module is the mechanical half of the rule that the fixer is never shown the rule. It
 // separates what the triage agent wrote from what the repository contains.
 
-import { SCANNERS } from './scan.cjs';
+import { SCANNERS } from './scan.ts';
 
 // Prose cannot enforce the rule above, so this does. It is derived from the record rather than
 // from a fixed word list, because the rule ids this skill has never seen are the ones that matter.
