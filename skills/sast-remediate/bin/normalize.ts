@@ -11,17 +11,55 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import type { ClaimedSeverity, Finding, FlowStep, InvariantClass, Locus, Observation, TaintFlow } from '../schema/types.ts';
 
 // Scanner output as read from disk, before normalize() parses it.
 type RawScans = { semgrep?: unknown; codeql?: unknown };
 
-const sha256 = (s) => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
-const collapseWs = (s) => s.replace(/\s+/g, ' ').trim();
+// The parts of each scanner's output this file reads, every field optional because the code
+// reads each one defensively. The enum-valued fields are claims, not checks: run.ts validates
+// every normalized finding against finding.schema.json and stops the run on a mismatch.
+type SemgrepClaim = Extract<ClaimedSeverity, { kind: 'semgrep' }>;
+type SemgrepOutput = {
+  results?: {
+    path?: string; start?: { line?: number }; check_id?: string;
+    extra?: {
+      metadata?: { cwe?: unknown; owasp?: unknown; shortlink?: unknown;
+        impact?: SemgrepClaim['impact']; likelihood?: SemgrepClaim['likelihood']; confidence?: SemgrepClaim['confidence'] };
+      fingerprint?: string; message?: string; severity?: SemgrepClaim['severity']; engine_kind?: string; is_ignored?: boolean;
+    };
+  }[];
+};
+type SarifLocation = { physicalLocation?: { artifactLocation?: { uri?: string }; region?: { startLine?: number } }; message?: { text?: string } };
+type SarifRule = {
+  id?: string; name?: string; shortDescription?: { text?: string };
+  properties?: { tags?: string[]; 'security-severity'?: string | number;
+    'problem.severity'?: Extract<ClaimedSeverity, { kind: 'codeql' }>['problem_severity'] };
+};
+type Sarif = {
+  runs?: {
+    tool?: { driver?: { name?: string; semanticVersion?: string; rules?: SarifRule[] } };
+    results?: {
+      ruleId?: string; locations?: SarifLocation[]; message?: { text?: string }; suppressions?: unknown[];
+      partialFingerprints?: Record<string, string>;
+      codeFlows?: { threadFlows?: { locations?: { location?: SarifLocation }[] }[] }[];
+    }[];
+  }[];
+};
+
+// One scanner result before folding: where it points, what it claims, and any trace it carried.
+type RawFlow = { provenance: 'codeql_codeflows'; steps: { file: string; line: number; role: FlowStep['role']; note: string | null }[] };
+type RawResult = { file: string | undefined; line: number | undefined; cwes: string[]; ruleId: string; observation: Observation; flow: RawFlow | null };
+type FoldedSite = { klass: InvariantClass; locus: Locus; observations: Observation[]; flows: (RawFlow | null)[] };
+type Repo = ReturnType<typeof makeRepo>;
+
+const sha256 = (s: string) => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
+const collapseWs = (s: string) => s.replace(/\s+/g, ' ').trim();
 
 // ---------------------------------------------------------------- invariant class
 
 // CWE -> our taxonomy. Deterministic, no LLM. Extend here, not at the call sites.
-const CWE_CLASS = {
+const CWE_CLASS: Record<string, InvariantClass> = {
   'CWE-89': 'injection.sql', 'CWE-564': 'injection.sql',
   'CWE-78': 'injection.command', 'CWE-77': 'injection.command', 'CWE-88': 'injection.command',
   'CWE-94': 'injection.code', 'CWE-95': 'injection.code',
@@ -48,7 +86,7 @@ const CWE_CLASS = {
 };
 
 // Fallback only. A rule id keyword is weaker evidence than a CWE, so it is consulted second.
-const RULE_KEYWORD_CLASS: [RegExp, string][] = [
+const RULE_KEYWORD_CLASS: [RegExp, InvariantClass][] = [
   [/sql[-_.]?inject|sqli/i, 'injection.sql'],
   [/command[-_.]?inject|child[-_.]?process|shell[-_.]?inject|os[-_.]?command/i, 'injection.command'],
   [/path[-_.]?(inject|travers)|zip[-_.]?slip/i, 'injection.path'],
@@ -63,24 +101,25 @@ const RULE_KEYWORD_CLASS: [RegExp, string][] = [
   [/eval|code[-_.]?inject/i, 'injection.code'],
 ];
 
-function classify(cwes, ruleId) {
+function classify(cwes: string[], ruleId: string): InvariantClass {
   for (const c of cwes) if (CWE_CLASS[c]) return CWE_CLASS[c];
   for (const [re, cls] of RULE_KEYWORD_CLASS) if (re.test(ruleId)) return cls;
   return 'other';
 }
 
-const normCwe = (s) => {
+const normCwe = (s: unknown) => {
   const m = /cwe[-_ ]?(\d+)/i.exec(String(s));
   return m ? `CWE-${String(Number(m[1]))}` : null;
 };
 
 // ---------------------------------------------------------------- repo snapshot
 
-function makeRepo(root) {
-  const cache = new Map();
-  const readLines = (rel) => {
-    if (cache.has(rel)) return cache.get(rel);
-    let lines = null;
+function makeRepo(root: string) {
+  const cache = new Map<string, string[] | null>();
+  const readLines = (rel: string): string[] | null => {
+    const hit = cache.get(rel);
+    if (hit !== undefined) return hit;
+    let lines: string[] | null = null;
     try {
       const abs = path.resolve(root, rel);
       // Refuse anything that escapes the repo root. Boundary validation happens here and
@@ -93,8 +132,8 @@ function makeRepo(root) {
   };
   return {
     root,
-    exists: (rel) => readLines(rel) !== null,
-    line: (rel, n) => {
+    exists: (rel: string) => readLines(rel) !== null,
+    line: (rel: string, n: number) => {
       const ls = readLines(rel);
       return ls && ls[n - 1] !== undefined ? ls[n - 1] : '';
     },
@@ -114,7 +153,7 @@ const DECL = [
   /^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_$][\w$]*)/,
 ];
 
-function enclosingSymbol(repo, file, line) {
+function enclosingSymbol(repo: Repo, file: string, line: number): string | null {
   const ls = repo.lines(file);
   if (!ls) return null;
   for (let i = Math.min(line, ls.length) - 1; i >= 0; i--) {
@@ -128,7 +167,7 @@ function enclosingSymbol(repo, file, line) {
 
 // The callee at the sink. This is FOLD 2's clustering key: forty call sites of one unsafe
 // helper share a sink_symbol and therefore one root cause, one contract, one patch.
-function extractCallee(lineText) {
+function extractCallee(lineText: string): string | null {
   const t = lineText.replace(/\/\/.*$/, '');
   const calls = [...t.matchAll(/([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\(/g)]
     .map((m) => m[1])
@@ -138,18 +177,18 @@ function extractCallee(lineText) {
 
 // ---------------------------------------------------------------- scanner parsing
 
-function fromSemgrep(json, repo) {
-  const out = [];
-  for (const r of json.results || []) {
+function fromSemgrep(json: unknown): RawResult[] {
+  const out: RawResult[] = [];
+  for (const r of (json as SemgrepOutput).results || []) {
     const e = r.extra || {};
     const m = e.metadata || {};
-    const cwes = (Array.isArray(m.cwe) ? m.cwe : m.cwe ? [m.cwe] : []).map(normCwe).filter(Boolean);
+    const cwes = (Array.isArray(m.cwe) ? m.cwe : m.cwe ? [m.cwe] : []).map(normCwe).filter((c) => c !== null);
     out.push({
       file: r.path, line: r.start && r.start.line,
-      cwes, ruleId: r.check_id,
+      cwes, ruleId: r.check_id as string,
       observation: {
         scanner: 'semgrep',
-        rule_id: r.check_id,
+        rule_id: r.check_id as string,
         rule_name: (m.shortlink ? String(m.shortlink) : null),
         // Semgrep OSS writes this placeholder for every result; it identifies nothing.
         native_fingerprint: e.fingerprint && e.fingerprint !== 'requires login' ? e.fingerprint : null,
@@ -177,13 +216,13 @@ function fromSemgrep(json, repo) {
 // `dropped` is threaded in so a locationless SARIF result is COUNTED, not silently lost.
 // foldSites already records the file-missing case; without this, the two failure modes
 // were asymmetric and one of them was invisible in the summary line.
-function fromSarif(sarif, repo, dropped) {
-  const out = [];
-  (sarif.runs || []).forEach((run, runIdx) => {
+function fromSarif(sarif: unknown, dropped: string[]): RawResult[] {
+  const out: RawResult[] = [];
+  ((sarif as Sarif).runs || []).forEach((run, runIdx) => {
     const driver = (run.tool && run.tool.driver) || {};
-    const rules = new Map<string, any>((driver.rules || []).map((r) => [r.id, r]));
+    const rules = new Map((driver.rules || []).map((r) => [r.id, r]));
     (run.results || []).forEach((r, idx) => {
-      const rule = rules.get(r.ruleId) || {};
+      const rule: SarifRule = rules.get(r.ruleId) || {};
       // security-severity and problem.severity live on the RULE, not the result.
       const props = rule.properties || {};
       const pl = r.locations && r.locations[0] && r.locations[0].physicalLocation;
@@ -191,11 +230,11 @@ function fromSarif(sarif, repo, dropped) {
       const file = pl.artifactLocation && pl.artifactLocation.uri;
       const line = pl.region && pl.region.startLine;
       if (!file || !line) { dropped.push(`${r.ruleId} result ${idx}: no file or line`); return; }
-      const cwes = (props.tags || []).map(normCwe).filter(Boolean);
+      const cwes = (props.tags || []).map(normCwe).filter((c) => c !== null);
       const secsev = props['security-severity'] !== undefined
         ? Number(props['security-severity']) : null;
 
-      let flow = null;
+      let flow: RawFlow | null = null;
       const cf = r.codeFlows && r.codeFlows[0];
       const tf = cf && cf.threadFlows && cf.threadFlows[0];
       if (tf && Array.isArray(tf.locations) && tf.locations.length >= 2) {
@@ -206,7 +245,7 @@ function fromSarif(sarif, repo, dropped) {
             return {
               file: (p && p.artifactLocation && p.artifactLocation.uri) || file,
               line: (p && p.region && p.region.startLine) || line,
-              role: i === 0 ? 'source' : i === tf.locations.length - 1 ? 'sink' : 'propagation',
+              role: i === 0 ? 'source' : i === (tf.locations as unknown[]).length - 1 ? 'sink' : 'propagation',
               note: (l.location && l.location.message && l.location.message.text) || null,
             };
           }),
@@ -214,10 +253,10 @@ function fromSarif(sarif, repo, dropped) {
       }
 
       out.push({
-        file, line, cwes, ruleId: r.ruleId,
+        file, line, cwes, ruleId: r.ruleId as string,
         observation: {
           scanner: 'codeql',
-          rule_id: r.ruleId,
+          rule_id: r.ruleId as string,
           rule_name: (rule.shortDescription && rule.shortDescription.text) || rule.name || null,
           native_fingerprint: r.partialFingerprints
             ? Object.values(r.partialFingerprints)[0] || null : null,
@@ -249,7 +288,7 @@ function fromSarif(sarif, repo, dropped) {
 // different identity for the same defect, and a rescan then reports every surviving finding as
 // new. INGEST.md states the repo-relative guarantee; this is the line that actually enforces it.
 // Returns null for anything outside the root, which foldSites counts as a drop.
-function toRepoRelative(file, root) {
+function toRepoRelative(file: string | undefined, root: string): string | null {
   if (!file) return null;
   const absRoot = path.resolve(root);
   const abs = path.resolve(absRoot, String(file).replace(/\\/g, '/'));
@@ -257,8 +296,8 @@ function toRepoRelative(file, root) {
   return path.relative(absRoot, abs).split(path.sep).join('/');
 }
 
-function foldSites(raws, repo, dropped) {
-  const sites = [];
+function foldSites(raws: RawResult[], repo: Repo, dropped: string[]): FoldedSite[] {
+  const sites: FoldedSite[] = [];
   for (const raw of raws) {
     const rel = toRepoRelative(raw.file, repo.root);
     if (!rel || !raw.line || !repo.exists(rel)) {
@@ -267,7 +306,7 @@ function foldSites(raws, repo, dropped) {
     }
     raw.file = rel;
     const lineText = repo.line(rel, raw.line);
-    const locus = {
+    const locus: Locus = {
       file: rel,
       symbol: enclosingSymbol(repo, rel, raw.line),
       sink_digest: sha256(collapseWs(lineText)),
@@ -297,8 +336,8 @@ function foldSites(raws, repo, dropped) {
   return sites;
 }
 
-function selectFlow(flows, anchorSite, repo) {
-  const traced = flows.filter(Boolean);
+function selectFlow(flows: (RawFlow | null)[], anchorSite: FoldedSite, repo: Repo): TaintFlow {
+  const traced = flows.filter((f) => f !== null);
   if (traced.length) {
     // Most steps wins; tie-break codeql > semgrep.
     traced.sort((a, b) => b.steps.length - a.steps.length ||
@@ -328,8 +367,8 @@ function selectFlow(flows, anchorSite, repo) {
   };
 }
 
-function foldFindings(sites, repo, runId) {
-  const groups = [];
+function foldFindings(sites: FoldedSite[], repo: Repo, runId: string): Finding[] {
+  const groups: { key: { invariant_class: InvariantClass; sink_symbol: string | null; source_class: null }; sites: FoldedSite[] }[] = [];
   for (const site of sites) {
     const callee = extractCallee(repo.line(site.locus.file, site.locus.line_at_scan));
     const key = { invariant_class: site.klass, sink_symbol: callee, source_class: null };
@@ -374,11 +413,11 @@ function foldFindings(sites, repo, runId) {
   });
 }
 
-function normalize(raw, repo, runId) {
-  const dropped = [];
+function normalize(raw: RawScans, repo: Repo, runId: string) {
+  const dropped: string[] = [];
   const raws = [
-    ...(raw.semgrep ? fromSemgrep(raw.semgrep, repo) : []),
-    ...(raw.codeql ? fromSarif(raw.codeql, repo, dropped) : []),
+    ...(raw.semgrep ? fromSemgrep(raw.semgrep) : []),
+    ...(raw.codeql ? fromSarif(raw.codeql, dropped) : []),
   ];
   const sites = foldSites(raws, repo, dropped);
   const findings = foldFindings(sites, repo, runId);
@@ -397,10 +436,11 @@ function normalize(raw, repo, runId) {
   return { findings, dropped, raw_count: raws.length, site_count: sites.length };
 }
 
-function main(argv) {
-  const args = Object.fromEntries(argv.map((a) => {
+function main(argv: string[]): number {
+  // Every option takes a value, so a bare flag is left out and reads as missing.
+  const args: Record<string, string> = Object.fromEntries(argv.flatMap((a) => {
     const i = a.indexOf('=');
-    return i < 0 ? [a.replace(/^--/, ''), true] : [a.slice(2, i), a.slice(i + 1)];
+    return i < 0 ? [] : [[a.slice(2, i), a.slice(i + 1)]];
   }));
   if (!args.repo) {
     console.error('usage: normalize.ts --repo=DIR [--semgrep=F.json] [--codeql=F.sarif] [--run=ID] [--out=F.json]');
