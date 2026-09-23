@@ -1,6 +1,7 @@
 {
   "name": "code-scanning-dev",
   "private": true,
+  "type": "module",
   "description": "Developer tooling only. The skill itself has no dependencies.",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json"
