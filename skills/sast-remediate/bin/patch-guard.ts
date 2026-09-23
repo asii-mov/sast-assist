@@ -4,7 +4,6 @@
 // laziest ways to make a finding disappear for free, before a single token is spent.
 
 import fs from 'fs';
-import type { SecurityContract } from '../schema/types.ts';
 
 const SUPPRESSION = /\b(nosemgrep|nosem|noqa|NOSONAR|nosec|eslint-disable(?:-next-line|-line)?|@SuppressWarnings|pylint:\s*disable|type:\s*ignore)\b|\b(?:codeql|lgtm)\s*\[/;
 
@@ -93,7 +92,10 @@ const ADVISORY = new Set<ViolationKind>(['sink_deleted_without_enforcement']);
 
 type GuardOpts = { sinkFiles?: string[]; sinkText?: string; requireWitnessFile?: boolean };
 
-function guardDiff(diffText: string, contract: SecurityContract | null, opts: GuardOpts = {}) {
+// The parts of a contract the guard reads. A SecurityContract is one.
+type GuardContract = { writable_scope?: string[]; witness?: { tier: string } };
+
+function guardDiff(diffText: string, contract: GuardContract | null, opts: GuardOpts = {}) {
   const violations: Violation[] = [];
   const files = parseDiff(diffText);
   const add = (kind: ViolationKind, extra: Record<string, unknown>) => violations.push({ kind, ...extra });

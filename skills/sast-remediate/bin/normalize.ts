@@ -288,7 +288,7 @@ function fromSarif(sarif: unknown, dropped: string[]): RawResult[] {
 // different identity for the same defect, and a rescan then reports every surviving finding as
 // new. INGEST.md states the repo-relative guarantee; this is the line that actually enforces it.
 // Returns null for anything outside the root, which foldSites counts as a drop.
-function toRepoRelative(file: string | undefined, root: string): string | null {
+function toRepoRelative(file: string | null | undefined, root: string): string | null {
   if (!file) return null;
   const absRoot = path.resolve(root);
   const abs = path.resolve(absRoot, String(file).replace(/\\/g, '/'));

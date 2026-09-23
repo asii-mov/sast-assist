@@ -8,7 +8,7 @@
 // It is not. It lets the scanner's guess cap what the fix decision can see.
 
 import fs from 'fs';
-import type { ClaimedSeverity, GateDecision, InvariantClass, Severity, Triage } from '../schema/types.ts';
+import type { ClaimedSeverity, Finding, GateDecision, InvariantClass, Severity } from '../schema/types.ts';
 import type { FindingRecord } from './stage.ts';
 
 const RANK: Record<Severity, number> = { informational: 0, low: 1, medium: 2, high: 3, critical: 4 };
@@ -17,7 +17,10 @@ const isSeverity = (s: string): s is Severity => Object.hasOwn(RANK, s);
 
 type Policy = { fix_at: Severity };
 
-function gate(triage: Triage, policy: Policy): GateDecision {
+// Only the verdict, and an exploitable triage's severity, decide the gate.
+type GateInput = { verdict: 'exploitable'; severity: Severity } | { verdict: 'not_exploitable' | 'undecidable' };
+
+function gate(triage: GateInput, policy: Policy): GateDecision {
   switch (triage.verdict) {
     case 'not_exploitable':
       return { action: 'report_only', reason: 'not_exploitable' };
@@ -81,7 +84,9 @@ function claimedRank(claimed: ClaimedSeverity): number {
 
 const ENTRY_HINT = /(^|\/)(routes?|controllers?|handlers?|api|endpoints?|cmd|views?|pages?)(\/|\.)/i;
 
-function priority(f: FindingRecord): number {
+type Prioritized = Pick<Finding, 'sites' | 'flow' | 'invariant_class'>;
+
+function priority(f: Prioritized): number {
   const obs = f.sites.flatMap((s) => s.observations);
   const maxClaim = obs.length ? Math.max(...obs.map((o) => claimedRank(o.claimed))) : 0;
   const scanners = new Set(obs.map((o) => o.scanner));
@@ -97,7 +102,7 @@ function priority(f: FindingRecord): number {
   );
 }
 
-const order = (findings: FindingRecord[]) =>
+const order = <T extends Prioritized & { id: string }>(findings: T[]): T[] =>
   [...findings].sort((a, b) => priority(b) - priority(a) || a.id.localeCompare(b.id));
 
 export type { Policy };
@@ -106,7 +111,7 @@ export { gate, priority, order, rank, claimedRank, isSeverity, RANK };
 if (import.meta.main) {
   const [file, fixAt = 'medium'] = process.argv.slice(2);
   if (!file || !isSeverity(fixAt)) { console.error('usage: gate.ts <findings.json> [fix_at]'); process.exit(2); }
-  const findings = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const findings = JSON.parse(fs.readFileSync(file, 'utf8')) as FindingRecord[];
   for (const f of order(findings)) {
     const g = f.triage ? gate(f.triage, { fix_at: fixAt }) : null;
     console.log(`${priority(f).toFixed(2).padStart(6)}  ${f.id}  ${f.invariant_class.padEnd(20)} ${g ? g.action : 'untriaged'}`);

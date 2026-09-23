@@ -20,7 +20,15 @@ type Stage = typeof STAGES[number];
 
 // `level` is the run's --verify level. A patch is judged against the obligations that level
 // requires, so a fix that passed every check the run asked for is not sent back for a second try.
-function stageOf(finding: FindingRecord, level: VerifyLevel): Stage {
+// The fields stageOf reads. A FindingRecord has them, and so does any record in that shape.
+type StageShape = {
+  disposition: unknown;
+  triage: { verdict: string; contract?: { witness: { tier: string } } } | null;
+  gate: { action: string } | null;
+  patches?: { verification?: Partial<Record<Obligation, { status: string }>> | null }[];
+};
+
+function stageOf(finding: StageShape, level: VerifyLevel): Stage {
   if (!isVerifyLevel(level)) throw new Error(`unknown verify level: ${level}`);
   if (finding.disposition !== null && finding.disposition !== undefined) return 'done';
   if (!finding.triage) return 'triage';
@@ -34,7 +42,7 @@ function stageOf(finding: FindingRecord, level: VerifyLevel): Stage {
       if (patches.length === 0) return 'fix';
       const last = patches[patches.length - 1];
       if (!last.verification) return 'verify';
-      const tier = 'contract' in finding.triage ? finding.triage.contract.witness.tier : null;
+      const tier = finding.triage.contract?.witness.tier ?? null;
       if (evaluateVerification(last.verification, VERIFY_LEVELS[level], tier).verified) return 'report';
       // The cap is in the type: schema/finding.schema.json bounds patches at two.
       return patches.length >= 2 ? 'report' : 'fix';
@@ -160,7 +168,7 @@ const VERIFY_LEVELS: Record<VerifyLevel, readonly Obligation[]> = {
 
 const isVerifyLevel = (s: string): s is VerifyLevel => Object.hasOwn(VERIFY_LEVELS, s);
 
-export type { Obligation, ObligationResult, Verification, Patch, Evaluation, Disposition, FindingRecord, VerifyLevel, Stage };
+export type { StageShape, Obligation, ObligationResult, Verification, Patch, Evaluation, Disposition, FindingRecord, VerifyLevel, Stage };
 export {
   stageOf, evaluateVerification, STAGES, OBLIGATIONS, MAY_BE_UNAVAILABLE, VERIFY_LEVELS, excused, isVerifyLevel,
 };

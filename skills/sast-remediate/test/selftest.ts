@@ -12,17 +12,18 @@ import { gate, priority, claimedRank } from '../bin/gate.ts';
 import { guardDiff, sameShape, inScope } from '../bin/patch-guard.ts';
 import { stageOf, evaluateVerification, OBLIGATIONS } from '../bin/stage.ts';
 import type { Obligation } from '../bin/stage.ts';
+import type { ClaimedSeverity, Severity } from '../schema/types.ts';
 import { toRepoRelative } from '../bin/normalize.ts';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const REPO = path.resolve(ROOT, '../../fixtures/vuln-app');
 
 let pass = 0, fail = 0;
-const t = (name, fn) => {
+const t = (name: string, fn: () => void) => {
   try { fn(); pass++; console.log(`  ok   ${name}`); }
-  catch (e) { fail++; console.log(`  FAIL ${name}\n         ${e.message}`); }
+  catch (e) { fail++; console.log(`  FAIL ${name}\n         ${e instanceof Error ? e.message : e}`); }
 };
-const section = (s) => console.log(`\n${s}`);
+const section = (s: string) => console.log(`\n${s}`);
 
 const schema = JSON.parse(fs.readFileSync(path.join(ROOT, 'schema/finding.schema.json'), 'utf8'));
 const repo = makeRepo(REPO);
@@ -31,7 +32,11 @@ const raw = {
   codeql: JSON.parse(fs.readFileSync(path.join(ROOT, 'test/fixtures/codeql.sarif'), 'utf8')),
 };
 const { findings } = normalize(raw, repo, 'run-test');
-const byClass = (c) => findings.find((f) => f.invariant_class === c);
+const byClass = (c: string) => {
+  const f = findings.find((x) => x.invariant_class === c);
+  assert.ok(f, `no ${c} finding`);
+  return f;
+};
 
 section('normalize: real scanner output');
 
@@ -64,11 +69,13 @@ t('evidence union: CodeQL flow AND Semgrep metadata on one record', () => {
   assert.strictEqual(f.flow.kind, 'traced');
   assert.strictEqual(f.flow.provenance, 'codeql_codeflows');
   const sg = f.sites[0].observations.find((o) => o.scanner === 'semgrep');
+  assert.ok(sg && sg.claimed.kind === 'semgrep', 'the path finding carries a semgrep observation');
   assert.strictEqual(sg.claimed.likelihood, 'HIGH');
 });
 
 t('taint path is materialized at ingest, not left for an agent to re-read', () => {
   const f = byClass('injection.command');
+  assert.ok(f.flow.kind === 'traced', 'the command finding carries a traced flow');
   assert.ok(f.flow.steps.length >= 2);
   assert.ok(f.flow.steps.every((s) => typeof s.code === 'string' && s.code.length > 0),
     'every flow step must carry its source line');
@@ -78,7 +85,7 @@ t('taint path is materialized at ingest, not left for an agent to re-read', () =
 
 t('sink_only is used when no scanner emitted a flow (semgrep OSS emits none)', () => {
   const f = findings.find((x) => x.flow.kind === 'sink_only');
-  assert.ok(f, 'expected at least one sink_only finding');
+  assert.ok(f && f.flow.kind === 'sink_only', 'expected at least one sink_only finding');
   assert.strictEqual(f.flow.reason, 'scanner_emitted_no_flow');
   assert.ok(f.flow.sink.code.length > 0);
 });
@@ -117,7 +124,7 @@ t('extractCallee finds the clustering key', () => {
 
 section('gate: the threshold');
 
-const exploitable = (sev) => ({ verdict: 'exploitable', severity: sev });
+const exploitable = (sev: Severity) => ({ verdict: 'exploitable' as const, severity: sev });
 
 t('exploitable at threshold is fixed', () => {
   assert.strictEqual(gate(exploitable('medium'), { fix_at: 'medium' }).action, 'fix');
@@ -167,14 +174,14 @@ t('semgrep likelihood/impact outranks rule-category severity', () => {
   // Measured on the real fixture: detect-child-process is ERROR with likelihood LOW, while
   // path-join-resolve-traversal is WARNING with likelihood HIGH. Ranking by severity alone
   // inverts them, which is the concrete case Constraint 3 warns about.
-  const errLowLik = { kind: 'semgrep', severity: 'ERROR', likelihood: 'LOW', impact: 'HIGH', confidence: 'LOW' };
-  const warnHighLik = { kind: 'semgrep', severity: 'WARNING', likelihood: 'HIGH', impact: 'MEDIUM', confidence: 'MEDIUM' };
+  const errLowLik: ClaimedSeverity = { kind: 'semgrep', severity: 'ERROR', likelihood: 'LOW', impact: 'HIGH', confidence: 'LOW' };
+  const warnHighLik: ClaimedSeverity = { kind: 'semgrep', severity: 'WARNING', likelihood: 'HIGH', impact: 'MEDIUM', confidence: 'MEDIUM' };
   assert.ok(claimedRank(warnHighLik) >= claimedRank(errLowLik),
     'HIGH-likelihood WARNING must not rank below a LOW-likelihood ERROR');
 });
 
 t('codeql security-severity uses published cut points', () => {
-  const at = (s) => claimedRank({ kind: 'codeql', security_severity: s, problem_severity: 'error' });
+  const at = (s: number) => claimedRank({ kind: 'codeql', security_severity: s, problem_severity: 'error' });
   assert.strictEqual(at(9.8), 4);
   assert.strictEqual(at(7.5), 3);
   assert.strictEqual(at(5.0), 2);
@@ -189,7 +196,7 @@ t('corroboration and a traced flow raise priority', () => {
 
 section('patch-guard: the cheating diffs');
 
-const diff = (p, removed, added) =>
+const diff = (p: string, removed: string[], added: string[]) =>
   `diff --git a/${p} b/${p}\n--- a/${p}\n+++ b/${p}\n` +
   removed.map((l) => `-${l}`).join('\n') + (removed.length ? '\n' : '') +
   added.map((l) => `+${l}`).join('\n') + '\n';
@@ -293,13 +300,14 @@ section('contract: the way around rule-blindness');
 // A denylist cannot satisfy this test by restating itself: add a scanner or upgrade a
 // ruleset and the corpus grows on its own.
 const INV = { ...schema.$defs.security_contract.properties.invariant, type: 'string' };
-const rejects = (v) => validate(INV, v).length > 0;
+const rejects = (v: unknown) => validate(INV, v).length > 0;
 
-const semgrepIds = [...new Set((raw.semgrep.results || []).map((r) => r.check_id))];
-const codeqlResultIds = [...new Set(raw.codeql.runs.flatMap(
-  (r) => (r.results || []).map((x) => x.ruleId)))];
+const semgrepIds = [...new Set<string>((raw.semgrep.results || []).map((r: { check_id: string }) => r.check_id))];
+type SarifRun = { results?: { ruleId: string }[]; tool: { driver: { rules?: { id: string }[] } } };
+const codeqlResultIds = [...new Set<string>(raw.codeql.runs.flatMap(
+  (r: SarifRun) => (r.results || []).map((x) => x.ruleId)))];
 const codeqlRuleIds = [...new Set<string>(raw.codeql.runs.flatMap(
-  (r) => ((r.tool.driver.rules || []).map((x) => x.id))))].filter((id) => id.includes('/'));
+  (r: SarifRun) => ((r.tool.driver.rules || []).map((x) => x.id))))].filter((id) => id.includes('/'));
 
 t('every rule id the scanners actually reported is rejected, bare', () => {
   const ids = [...semgrepIds, ...codeqlResultIds];
@@ -392,7 +400,7 @@ t('stageOf judges one patch with the obligations of the run level', () => {
   const fixing = { ...base, triage: triaged, gate: { action: 'fix' } };
   const cheapPass = { frozen_target: { status: 'pass' }, deterministic_guard: { status: 'pass' },
     regression_suite: { status: 'unavailable' }, no_new_findings: { status: 'pass' } };
-  const one = (verification) => ({ ...fixing, patches: [{ verification }] });
+  const one = (verification: Partial<Record<Obligation, { status: string }>>) => ({ ...fixing, patches: [{ verification }] });
   assert.strictEqual(stageOf(one({}), 'none'), 'report');
   assert.strictEqual(stageOf(one({}), 'cheap'), 'fix');
   assert.strictEqual(stageOf(one(cheapPass), 'cheap'), 'report');
@@ -404,6 +412,7 @@ t('stageOf judges one patch with the obligations of the run level', () => {
 t('stageOf refuses a missing or unknown level instead of judging at full', () => {
   // @ts-expect-error the missing level is the point of this check
   assert.throws(() => stageOf(base), /unknown verify level: undefined/);
+  // @ts-expect-error an unknown level is the point of this check
   assert.throws(() => stageOf(base, 'toString'), /unknown verify level: toString/);
 });
 
@@ -463,7 +472,7 @@ t('at the argued tier the witness pair may be unavailable, and at no other tier'
 });
 
 t('at full, an argued patch with its pair excused reaches report, and a dynamic one goes back to fix', () => {
-  const withTier = (tier) => ({ ...base,
+  const withTier = (tier: string) => ({ ...base,
     triage: { verdict: 'exploitable', contract: { witness: { tier } } },
     gate: { action: 'fix' },
     patches: [{ verification: { ...allPass, differential_witness: { status: 'unavailable' },
@@ -487,7 +496,7 @@ const audit = (over: Record<string, unknown> = {}) => ({
   explanation: 'the join is resolved and prefix-checked before the read',
   ...over,
 });
-const auditErrs = (o) => validate(AUDIT, o, path.join(ROOT, 'schema'));
+const auditErrs = (o: unknown) => validate(AUDIT, o, path.join(ROOT, 'schema'));
 
 t('a well-formed enforces_invariant audit validates', () => {
   assert.deepStrictEqual(auditErrs(audit()), []);
