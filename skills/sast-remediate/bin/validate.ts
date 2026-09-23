@@ -171,7 +171,7 @@ function check(schema, data, root, path, errs, depth) {
   }
 }
 
-function validate(schema, data, baseDir) {
+function validate(schema, data, baseDir?: string) {
   const errs = [];
   const root = baseDir ? { ...schema, __baseDir: baseDir } : schema;
   check(root, data, root, '$', errs, 0);

@@ -27,7 +27,7 @@ const ISOLATION = ['--setting-sources', 'user', '--settings', '{"disableAllHooks
 // claude 2.1.280 in .work/probe/sandbox.txt.
 const CONFINEMENT = ['--restricted', '--strict-mcp-config', '--permission-mode', 'dontAsk'];
 
-function argvFor({ prompt, model, tools }) {
+function argvFor({ prompt, model, tools }: { prompt: string; model?: string | null; tools: string[] }) {
   const argv = ['-p', prompt, '--output-format', 'json', ...ISOLATION, ...CONFINEMENT,
     '--tools', tools.join(',')];
   if (model) argv.push('--model', model);
@@ -38,7 +38,9 @@ function argvFor({ prompt, model, tools }) {
 
 // The injectable seam. `exec(argv, {cwd, timeoutMs}) -> {code, stdout, stderr, timedOut}`.
 // Tests pass their own; nothing else in the skill spawns a model.
-function realExec(argv: string[], { cwd, timeoutMs, command = CLI }: { cwd?: string; timeoutMs?: number; command?: string } = {}) {
+type ExecResult = { code: number; stdout: string; stderr: string; timedOut: boolean };
+
+function realExec(argv: string[], { cwd, timeoutMs, command = CLI }: { cwd?: string; timeoutMs?: number; command?: string } = {}): Promise<ExecResult> {
   return new Promise((resolve) => {
     // detached gives the child its own process group. The CLI spawns tool subprocesses of its
     // own, and killing the parent alone leaves those holding the run open past its budget.

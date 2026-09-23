@@ -1,20 +1,21 @@
 #!/usr/bin/env node
-'use strict';
-// Run: node test/selftest.cjs
+// Run: node test/selftest.ts
 // Every assertion runs against the real artifact. The scanner fixtures are genuine output
 // from semgrep 1.177.0 and CodeQL 2.26.4 over fixtures/vuln-app, not hand-written JSON.
 
-const fs = require('fs');
-const path = require('path');
-const assert = require('assert');
+import fs from 'fs';
+import path from 'path';
+import assert from 'assert';
+import { normalize, makeRepo, classify, extractCallee } from '../bin/normalize.ts';
+import { validate } from '../bin/validate.ts';
+import { gate, priority, claimedRank } from '../bin/gate.ts';
+import { guardDiff, sameShape, inScope } from '../bin/patch-guard.ts';
+import { stageOf, evaluateVerification, OBLIGATIONS } from '../bin/stage.ts';
+import type { Obligation } from '../bin/stage.ts';
+import { toRepoRelative } from '../bin/normalize.ts';
 
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(import.meta.dirname, '..');
 const REPO = path.resolve(ROOT, '../../fixtures/vuln-app');
-const { normalize, makeRepo, classify, extractCallee } = require(path.join(ROOT, 'bin/normalize.ts'));
-const { validate } = require(path.join(ROOT, 'bin/validate.ts'));
-const { gate, priority, claimedRank } = require(path.join(ROOT, 'bin/gate.ts'));
-const { guardDiff, sameShape, inScope } = require(path.join(ROOT, 'bin/patch-guard.ts'));
-const { stageOf, evaluateVerification, OBLIGATIONS } = require(path.join(ROOT, 'bin/stage.ts'));
 
 let pass = 0, fail = 0;
 const t = (name, fn) => {
@@ -297,7 +298,7 @@ const rejects = (v) => validate(INV, v).length > 0;
 const semgrepIds = [...new Set((raw.semgrep.results || []).map((r) => r.check_id))];
 const codeqlResultIds = [...new Set(raw.codeql.runs.flatMap(
   (r) => (r.results || []).map((x) => x.ruleId)))];
-const codeqlRuleIds = [...new Set(raw.codeql.runs.flatMap(
+const codeqlRuleIds = [...new Set<string>(raw.codeql.runs.flatMap(
   (r) => ((r.tool.driver.rules || []).map((x) => x.id))))].filter((id) => id.includes('/'));
 
 t('every rule id the scanners actually reported is rejected, bare', () => {
@@ -362,7 +363,7 @@ section('stage: one definition of where a record is');
 
 const base = { disposition: null, triage: null, gate: null, patches: [] };
 const triaged = { verdict: 'exploitable' };
-const allPass = Object.fromEntries(OBLIGATIONS.map((o) => [o, { status: 'pass' }]));
+const allPass: Partial<Record<Obligation, { status: string }>> = Object.fromEntries(OBLIGATIONS.map((o) => [o, { status: 'pass' }]));
 
 t('stage is derived from shape, in order', () => {
   assert.strictEqual(stageOf(base, 'cheap'), 'triage');
@@ -401,6 +402,7 @@ t('stageOf judges one patch with the obligations of the run level', () => {
 });
 
 t('stageOf refuses a missing or unknown level instead of judging at full', () => {
+  // @ts-expect-error the missing level is the point of this check
   assert.throws(() => stageOf(base), /unknown verify level: undefined/);
   assert.throws(() => stageOf(base, 'toString'), /unknown verify level: toString/);
 });
@@ -477,7 +479,7 @@ const agentSchema = JSON.parse(
   fs.readFileSync(path.join(ROOT, 'schema/agent-results.schema.json'), 'utf8'));
 const AUDIT = agentSchema.$defs.audit;
 const ref = { file: 'src/routes/files.js', line: 9, note: 'sink' };
-const audit = (over) => ({
+const audit = (over: Record<string, unknown> = {}) => ({
   verdict: 'enforces_invariant',
   trace: [{ step: 'attacker-controlled path reaches the read', loc: ref }],
   stopped_at: ref,
@@ -530,7 +532,6 @@ t('the real fixtures still drop nothing', () => {
 
 section('identity: a path is repo-relative or it is dropped');
 
-const { toRepoRelative } = require(path.join(ROOT, 'bin/normalize.ts'));
 
 t('an absolute path inside the root is relativised, so identity survives a rescan', () => {
   assert.strictEqual(toRepoRelative('/tmp/root/src/app.js', '/tmp/root'), 'src/app.js');

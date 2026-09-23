@@ -198,7 +198,7 @@ and the control.
 `bin/app-harness.ts` discovers, boots and tears down the target application, and is used only
 by the opt-in dynamic tier.
 
-`test/selftest.cjs` runs the unit suite against real scanner fixtures. `test/e2e-witness.cjs`
+`test/selftest.ts` runs the unit suite against real scanner fixtures. `test/e2e-witness.ts`
 boots the fixture app and proves the witness and the control end to end.
 `tools/validate-skill.cjs` checks this tree.
 

@@ -1,25 +1,24 @@
 #!/usr/bin/env node
-'use strict';
-// Run: node test/run.test.cjs
+// Run: node test/run.test.ts
 // The orchestrator, driven end to end with an injected agent runner and an injected process
 // runner. No real model call, no real scanner, no network. The findings are normalized from the
 // genuine semgrep and CodeQL fixtures, so the leak assertions below run against real rule ids.
 
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const assert = require('assert');
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import assert from 'assert';
+import * as R from '../bin/run.ts';
+import * as S from '../bin/scan.ts';
+import { normalize, makeRepo } from '../bin/normalize.ts';
+import { validate } from '../bin/validate.ts';
+import { VERIFY_LEVELS, stageOf } from '../bin/stage.ts';
+import { renderRemediation, renderHandoff } from '../bin/report.ts';
 
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(import.meta.dirname, '..');
 const REPO = path.resolve(ROOT, '../../fixtures/vuln-app');
 const SCHEMA_DIR = path.join(ROOT, 'schema');
 
-const R = require(path.join(ROOT, 'bin/run.ts'));
-const S = require(path.join(ROOT, 'bin/scan.ts'));
-const { normalize, makeRepo } = require(path.join(ROOT, 'bin/normalize.ts'));
-const { validate } = require(path.join(ROOT, 'bin/validate.ts'));
-const { VERIFY_LEVELS, stageOf } = require(path.join(ROOT, 'bin/stage.ts'));
-const { renderRemediation, renderHandoff } = require(path.join(ROOT, 'bin/report.ts'));
 
 const readJson = (f) => JSON.parse(fs.readFileSync(f, 'utf8'));
 
@@ -49,7 +48,7 @@ const pathFinding = () => fixtures().find((f) => f.invariant_class === 'injectio
 
 const RULE_ID = 'js/path-injection';
 
-const contract = (over = {}) => ({
+const contract = (over: Record<string, any> = {}) => ({
   invariant: 'every string reaching the first argument of the file read in `read` resolves inside '
     + 'the public directory, and a request may only select a name already present there',
   violating_input: '../../secret.txt',
@@ -63,7 +62,7 @@ const contract = (over = {}) => ({
   ...over,
 });
 
-const exploitable = (over = {}) => ({
+const exploitable = (over: Record<string, any> = {}) => ({
   verdict: 'exploitable', established_by: 'agent', contract: contract(over.contract || {}),
   severity: over.severity || 'high',
   impact: 'any file readable by the process is returned to an unauthenticated caller',
@@ -101,15 +100,15 @@ const DIFF_TEST = `diff --git a/test/files.test.js b/test/files.test.js
 
 // ----------------------------------------------------------------- injections
 
-function makeDeps(o = {}) {
+function makeDeps(o: Record<string, any> = {}) {
   const state = {
     agentCalls: [], execCalls: [], diff: o.diff === undefined ? DIFF_SRC : o.diff,
     npm: o.npm || (() => 0), rescan: o.rescan || { results: [], errors: [] },
-    reports: {},
+    reports: {} as { remediation?: { f: unknown; m: Record<string, unknown> }; handoff?: { f: unknown; m: Record<string, unknown> } },
   };
   const okr = (stdout = '') => ({ status: 0, stdout, stderr: '' });
 
-  const exec = (cmd, args, opt = {}) => {
+  const exec = (cmd, args, opt: { cwd?: string } = {}) => {
     state.execCalls.push([cmd, ...args].join(' '));
     if (cmd === 'git') {
       const rest = args[0] === '-C' ? args.slice(2) : args;
@@ -150,12 +149,12 @@ function makeDeps(o = {}) {
       const r = typeof h === 'function' ? h(opts, state) : h;
       return r;
     },
+    state,
   };
-  deps.state = state;
   return deps;
 }
 
-const baseOpts = (over = {}) => R.parseArgs([
+const baseOpts = (over: Record<string, any> = {}) => R.parseArgs([
   `--target=${REPO}`, `--scans=${path.join(ROOT, 'test/fixtures')}`,
   ...(over.argv || []),
 ]);
@@ -425,7 +424,7 @@ t('each policy family matches', () => {
 
 section('the pipeline, end to end with injected agents');
 
-async function triageOnlyRun(over = {}) {
+async function triageOnlyRun(over: Record<string, any> = {}) {
   const out = path.join(tmp(), 'run-1');
   const opts = baseOpts(); opts.out = out; opts.triageOnly = true;
   Object.assign(opts, over.opts || {});
@@ -610,7 +609,7 @@ const PATCHED = { ok: true, data: { outcome: 'patched', declared_files: ['src/ro
 
 const semgrepCalls = (deps) => deps.state.execCalls.filter((c) => c.startsWith('semgrep '));
 
-async function fixRun(over = {}) {
+async function fixRun(over: Record<string, any> = {}) {
   const out = over.out || path.join(tmp(), 'run-1');
   const opts = baseOpts({ argv: over.argv });
   opts.out = out; opts.scanners = over.scanners || ['semgrep']; opts.verify = over.verify || 'cheap';
@@ -974,7 +973,7 @@ t('at full, an argued fix ends fixed_unwitnessed after one fixer call', async ()
   assert.strictEqual(fixerCalls.length, res.findings.filter((x) => x.patches.length).length);
 });
 
-// Copied from test/e2e-witness.cjs:56-70 so this deps-seam test can exercise the dynamic tier
+// Copied from test/e2e-witness.ts:56-70 so this deps-seam test can exercise the dynamic tier
 // without booting a real app: it never reaches witnessObligations' boot step because
 // --witness=dynamic is not passed, so allowDynamic is false.
 const DYNAMIC_WITNESS = {
@@ -1120,7 +1119,7 @@ section('resume');
 
 t('defaultOutDir continues an unfinished run of the same commit and starts fresh otherwise', () => {
   const root = tmp(); const B = 'b'.repeat(40);
-  const mk = (n, meta) => {
+  const mk = (n, meta?) => {
     const dir = path.join(root, 'vuln-app', `run-${n}`);
     fs.mkdirSync(dir, { recursive: true });
     if (meta) fs.writeFileSync(path.join(dir, 'run-metadata.json'), JSON.stringify(meta));
@@ -1276,10 +1275,11 @@ t('a fix that failed on a dead agent call under the old rules is tried again', a
 section('end state');
 
 t('every finding ends terminal, or the run says incomplete with its exact reason', async () => {
-  for (const [name, over] of [
+  const cases: [string, Record<string, unknown>][] = [
     ['rejected', { triage: () => ({ ok: true, data: notExploitable() }) }],
     ['deferred', { triage: () => ({ ok: false, reason: 'bad' }) }],
-  ]) {
+  ];
+  for (const [name, over] of cases) {
     const { res } = await triageOnlyRun(over);
     const open = res.findings.filter((f) => !f.disposition);
     if (open.length) {
@@ -1309,7 +1309,7 @@ t('the triage return schema carries no unresolved cross-file pointer', () => {
 
 t('every local $defs pointer in the triage schema resolves inside the bundle', () => {
   const o = JSON.parse(R.bundleDef('triage'));
-  const pointers = new Set();
+  const pointers = new Set<string>();
   const walk = (n) => {
     if (Array.isArray(n)) return n.forEach(walk);
     if (!n || typeof n !== 'object') return;
@@ -1428,7 +1428,10 @@ t('a leak that slips past the schema refuses that finding and the run still comp
 
 section('languages: CodeQL sees every language in the repository');
 
-const tree = (files) => {
+// The merged SARIF is scanner output, so the test names the one path it reads.
+const runNames = (raw) => (raw.codeql as { runs: { tool: { driver: { name: string } } }[] }).runs.map((x) => x.tool.driver.name);
+
+const tree = (files: Record<string, string>) => {
   const d = tmp();
   for (const [rel, body] of Object.entries(files)) {
     fs.mkdirSync(path.dirname(path.join(d, rel)), { recursive: true });
@@ -1449,7 +1452,7 @@ const codeqlDeps = (failCreate = []) => ({
     return { status: 0, stdout: '', stderr: '' };
   },
 });
-const scanOpts = (over = {}) => ({ scans: null, scanners: ['codeql'],
+const scanOpts = (over: Record<string, any> = {}) => ({ scans: null, scanners: ['codeql'],
   scanConfig: { semgrep: ['p/default'], codeql_suite: 'security-extended' }, ...over });
 
 t('every language with source files is detected, and vendored code is not', () => {
@@ -1467,7 +1470,7 @@ t('one database per language, merged into one SARIF with a run each', () => {
   const target = tree({ 'a.js': '', 'b.py': '' });
   const scanDir = path.join(tmp(), 'scans');
   const { raw: r, scanners } = S.runScanners(scanOpts(), codeqlDeps(), target, scanDir);
-  assert.deepStrictEqual(r.codeql.runs.map((x) => x.tool.driver.name), ['javascript', 'python']);
+  assert.deepStrictEqual(runNames(r), ['javascript', 'python']);
   assert.deepStrictEqual(scanners, [{ name: 'codeql', status: 'ok', detail: path.join(scanDir, 'codeql.sarif'),
     config: 'javascript,python', languages: ['javascript', 'python'] }]);
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(scanDir, 'codeql.sarif'), 'utf8')).runs.length, 2);
@@ -1476,7 +1479,7 @@ t('one database per language, merged into one SARIF with a run each', () => {
 t('a language that fails is recorded and the others still count', () => {
   const target = tree({ 'a.js': '', 'b.py': '' });
   const { raw: r, scanners } = S.runScanners(scanOpts(), codeqlDeps(['python']), target, path.join(tmp(), 'scans'));
-  assert.deepStrictEqual(r.codeql.runs.map((x) => x.tool.driver.name), ['javascript']);
+  assert.deepStrictEqual(runNames(r), ['javascript']);
   assert.deepStrictEqual([scanners[0].status, scanners[0].languages, scanners[0].detail],
     ['partial', ['javascript'], 'python: no python source seen']);
 });

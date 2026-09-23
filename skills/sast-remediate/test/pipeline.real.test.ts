@@ -1,24 +1,23 @@
 #!/usr/bin/env node
-'use strict';
-// Run: node test/pipeline.real.test.cjs
+// Run: node test/pipeline.real.test.ts
 // The whole pipeline against a real git copy of the fixture app. Real git, the real agent
 // spawn path in bin/agent.ts (a fake `claude` found on PATH), the real report renderer. Only
 // the scanners are stood in for: the baseline comes from test/fixtures via --scans, and the
 // rescan is answered by a fake semgrep. A case marked expectFail(unit) documents a known
 // defect; it must fail today, and the unit that fixes it turns it into a plain case.
 
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const assert = require('assert');
-const { execFileSync } = require('child_process');
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import assert from 'assert';
+import { execFileSync } from 'child_process';
+import * as R from '../bin/run.ts';
+import { runAgent } from '../bin/agent.ts';
+import { renderRemediation, renderHandoff } from '../bin/report.ts';
 
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(import.meta.dirname, '..');
 const FIXTURE = path.resolve(ROOT, '../../fixtures/vuln-app');
 const SCANS = path.join(ROOT, 'test/fixtures');
-const R = require(path.join(ROOT, 'bin/run.ts'));
-const { runAgent } = require(path.join(ROOT, 'bin/agent.ts'));
-const { renderRemediation, renderHandoff } = require(path.join(ROOT, 'bin/report.ts'));
 
 const PATH_ID = 'f_6ed43412e0d9b09d';
 const COMMAND_ID = 'f_d72e46f6d1ec2eb0';
@@ -27,8 +26,8 @@ const TRANSPORT_ID = 'f_e2981bd8a7b838b9';
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'sast-pipeline-'));
 const BIN = path.join(TMP, 'bin');
 fs.mkdirSync(BIN);
-fs.chmodSync(path.join(__dirname, 'fake-claude.ts'), 0o755);
-fs.symlinkSync(path.join(__dirname, 'fake-claude.ts'), path.join(BIN, 'claude'));
+fs.chmodSync(path.join(import.meta.dirname, 'fake-claude.ts'), 0o755);
+fs.symlinkSync(path.join(import.meta.dirname, 'fake-claude.ts'), path.join(BIN, 'claude'));
 // XDG_CONFIG_HOME too: git reads ~/.config/git/ignore even with GIT_CONFIG_GLOBAL unset, and a
 // personal ignore of .claude/ files would hide the stray-file defect.
 Object.assign(process.env, {
@@ -64,7 +63,7 @@ const WITNESS = {
     expected_pre_fix: 'fail', expected_post_fix: 'pass',
   },
   argued: { tier: 'argued', obstacle: 'no_test_harness', why: 'the fixture ships no harness for this route' },
-  // Same witness as test/e2e-witness.cjs:56-70: the real endpoint and the real public files this
+  // Same witness as test/e2e-witness.ts:56-70: the real endpoint and the real public files this
   // fixture ships, so a live boot of the app can send the attack and the control for real.
   dynamic: {
     tier: 'dynamic',
@@ -119,8 +118,14 @@ function makeTarget(name, { dropTestScript }) {
   return dir;
 }
 
+// One entry per fixer call, read by test/fake-claude.ts.
+type FixStep = { act: string; witness?: boolean; reason?: string; stray?: boolean; commit?: boolean };
+
 async function runScenario(name, { tier = 'executable', fix = [PATCH], verify = 'cheap', witness = null,
-  rescan = () => ({ results: [], errors: [] }), dropTestScript = false, runs = 1, prepare = null } = {}) {
+  rescan = () => ({ results: [], errors: [] }), dropTestScript = false, runs = 1, prepare = null }: {
+  tier?: string; fix?: FixStep[]; verify?: string; witness?: string | null; rescan?: (worktree?: string) => unknown;
+  dropTestScript?: boolean; runs?: number; prepare?: ((target: string, out: string) => void) | null;
+} = {}) {
   const target = makeTarget(name, { dropTestScript });
   const out = path.join(TMP, name, `run-${name}`);
   const log = path.join(TMP, name, 'claude-calls.jsonl');
@@ -257,7 +262,7 @@ t('a repo with no test script gets patched', async () => {
 
 t('REMEDIATION.md names only branches that exist', async () => {
   const s = await scenarios.plain();
-  const named = [...new Set(s.report.match(/sast-fix\/[A-Za-z0-9._/-]+/g) || [])];
+  const named = [...new Set<string>(s.report.match(/sast-fix\/[A-Za-z0-9._/-]+/g) || [])];
   assert.deepStrictEqual(named.filter((b) => !s.branches.includes(b)), [], `phantom branches in ${s.branches.join(', ')}`);
   assert.ok(named.some((b) => b.startsWith(`sast-fix/run-plain/${PATH_ID}/`)), `named: ${named.join(', ')}`);
 });

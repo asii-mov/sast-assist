@@ -14,6 +14,8 @@ const writeJson = (f, v) => fs.writeFileSync(f, JSON.stringify(v, null, 2));
 const trim = (s) => String(s || '').trim().split('\n').slice(-3).join(' ').slice(0, 300);
 
 type ScanConfig = { semgrep: string[]; codeql_suite: string };
+type ScannerStatus = { name: string; status: string; detail: string; config?: string; languages?: string[] };
+type Rescan = { ran: boolean; scanners: ScannerStatus[]; original_absent: boolean | null; new_findings: string[] };
 
 const DEFAULT_SCAN_CONFIG: Readonly<ScanConfig> = Object.freeze({ semgrep: ['p/default'], codeql_suite: 'security-extended' });
 const SUITE_NAME = /^[a-z0-9][a-z0-9-]*$/;
@@ -171,7 +173,7 @@ function baselineOf(raw, findings, scanConfig, scanners) {
   };
 }
 
-function rescan(finding, worktree, scanDir, { deps, runId, baseline }): { obligation: ObligationResult; rescan: object } {
+function rescan(finding, worktree, scanDir, { deps, runId, baseline }): { obligation: ObligationResult; rescan: Rescan } {
   const { raw, scanners } = runScanners(
     { scans: null, scanners: baseline.scanners, scanConfig: baseline.scanConfig, languages: baseline.languages },
     deps, worktree, scanDir);
@@ -193,7 +195,7 @@ function rescan(finding, worktree, scanDir, { deps, runId, baseline }): { obliga
   };
 }
 
-export type { ScanConfig };
+export type { ScanConfig, ScannerStatus, Rescan };
 export {
   runScanners, detectLanguages, onPath, trim, baselineOf, rescan,
   DEFAULT_SCAN_CONFIG, SUITE_NAME, semgrepConfigArg, parseScanConfig, SCANNERS,

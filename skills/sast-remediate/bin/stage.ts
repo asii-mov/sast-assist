@@ -101,7 +101,8 @@ const excused = (name, tier) => MAY_BE_UNAVAILABLE.has(name) || (tier === 'argue
 // cannot pass, fail or rescue anything, and it is reported as skipped so the report can say so.
 // `tier` is the frozen contract's witness tier, used only to excuse the argued pair above; it
 // never comes from the verification record itself, so a patch cannot excuse itself.
-function evaluateVerification(verification: Verification | null, required: readonly Obligation[] = OBLIGATIONS, tier: string | null = null): Evaluation {
+// It reads records back from disk and looks only at each obligation's status, so that is all it asks for.
+function evaluateVerification(verification: Partial<Record<Obligation, { status: string }>> | null, required: readonly Obligation[] = OBLIGATIONS, tier: string | null = null): Evaluation {
   const req = new Set(required);
   const failed: Obligation[] = [];
   const unavailable: Obligation[] = [];

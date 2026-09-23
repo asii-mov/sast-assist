@@ -1,17 +1,16 @@
 #!/usr/bin/env node
-'use strict';
-// Run: node test/agent.test.cjs
+// Run: node test/agent.test.ts
 // Every model call here is a fake `exec`. The suite never runs the real CLI and never touches
 // the network. The one real subprocess is a node child used to prove the group kill, because
 // a timeout that leaves a grandchild running is the failure the kill exists to prevent.
 
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const assert = require('assert');
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import assert from 'assert';
+import { runAgent, realExec, argvFor, extractJson } from '../bin/agent.ts';
 
-const ROOT = path.resolve(__dirname, '..');
-const { runAgent, realExec, argvFor, extractJson } = require(path.join(ROOT, 'bin/agent.ts'));
+const ROOT = path.resolve(import.meta.dirname, '..');
 
 const SCHEMA = path.join(ROOT, 'schema/agent-results.schema.json');
 const TRIAGE = '#/$defs/triage';

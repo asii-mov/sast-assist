@@ -1,23 +1,21 @@
 #!/usr/bin/env node
-'use strict';
 // End-to-end proof of the differential witness and the functional control.
-// Run: node test/e2e-witness.cjs   (boots the fixture app on loopback, three trees)
+// Run: node test/e2e-witness.ts   (boots the fixture app on loopback, three trees)
 //
 // The case that matters is head-cheat. Its differential passes: the attack genuinely stops
 // working. It would satisfy the guard, the witness, the rescan and a diff-reading auditor.
 // Only the control catches it, because the control asks the other question: does the
 // legitimate path still work.
 
-const fs = require('fs');
-const os = require('os');
-const net = require('net');
-const path = require('path');
-const assert = require('assert');
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import assert from 'assert';
+import { discoverAppHarness, boot } from '../bin/app-harness.ts';
+import { runWitness, witnessObligations, freePort } from '../bin/witness-run.ts';
 
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(import.meta.dirname, '..');
 const FIXTURE = path.resolve(ROOT, '../../fixtures/vuln-app');
-const { discoverAppHarness, boot } = require(path.join(ROOT, 'bin/app-harness.ts'));
-const { runWitness, witnessObligations } = require(path.join(ROOT, 'bin/witness-run.ts'));
 
 const HONEST = `const fs = require('fs');
 const path = require('path');
@@ -69,11 +67,6 @@ const witness = {
   expected_post_fix: 'observable_absent',
 };
 
-const freePort = () => new Promise((res) => {
-  const s = net.createServer();
-  s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)); });
-});
-
 // Pids whose working directory is inside `dir`. Every booted app runs from one of the trees
 // under the work dir, so an empty list means every app was shut down. Linux only (/proc).
 const runningUnder = (dir) => {
@@ -108,7 +101,7 @@ const canSeeProcs = process.platform === 'linux' && fs.existsSync('/proc/self/cw
   let pass = 0, fail = 0;
   const pending = [];
   const t = (n, fn) => {
-    const done = (e) => {
+    const done = (e?: Error) => {
       if (e) { fail++; console.log(`  FAIL ${n}\n         ${e.message}`); }
       else { pass++; console.log(`  ok   ${n}`); }
     };
@@ -121,7 +114,7 @@ const canSeeProcs = process.platform === 'linux' && fs.existsSync('/proc/self/cw
 
   try {
     assert.ok(harness, 'a harness must be discoverable for the fixture app');
-    const results = {};
+    const results: Record<string, Awaited<ReturnType<typeof runWitness>>> = {};
     for (const [name, dir] of Object.entries(trees)) {
       const [pb, ph] = [await freePort(), await freePort()];
       const b = await boot(harness, base, { port: pb });
