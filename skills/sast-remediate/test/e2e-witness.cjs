@@ -17,7 +17,7 @@ const assert = require('assert');
 const ROOT = path.resolve(__dirname, '..');
 const FIXTURE = path.resolve(ROOT, '../../fixtures/vuln-app');
 const { discoverAppHarness, boot } = require(path.join(ROOT, 'bin/app-harness.cjs'));
-const { runWitness } = require(path.join(ROOT, 'bin/witness-run.cjs'));
+const { runWitness, witnessObligations } = require(path.join(ROOT, 'bin/witness-run.cjs'));
 
 const HONEST = `const fs = require('fs');
 const path = require('path');
@@ -74,6 +74,25 @@ const freePort = () => new Promise((res) => {
   s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)); });
 });
 
+// Pids whose working directory is inside `dir`. Every booted app runs from one of the trees
+// under the work dir, so an empty list means every app was shut down. Linux only (/proc).
+const runningUnder = (dir) => {
+  const out = [];
+  for (const pid of fs.readdirSync('/proc').filter((d) => /^\d+$/.test(d))) {
+    try {
+      const cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
+      if (cwd === dir || cwd.startsWith(dir + path.sep)) out.push(Number(pid));
+    } catch { /* exited, zombie, or not ours to read */ }
+  }
+  return out;
+};
+// A SIGKILL lands asynchronously, so give the kernel a moment before calling it a leak.
+const settle = async (dir) => {
+  for (let i = 0; i < 20 && runningUnder(dir).length; i++) await new Promise((r) => setTimeout(r, 100));
+  return runningUnder(dir);
+};
+const canSeeProcs = process.platform === 'linux' && fs.existsSync('/proc/self/cwd');
+
 (async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'sast-e2e-'));
   const tree = (name, patch) => {
@@ -113,6 +132,11 @@ const freePort = () => new Promise((res) => {
       } finally { b.kill(); h.kill(); }
     }
 
+    const leftAfterBoots = canSeeProcs ? await settle(work) : [];
+    const obligations = await witnessObligations(witness,
+      { baseDir: base, headDir: trees.honest, harnesses: [harness] }, { allowDynamic: true });
+    const leftAfterObligations = canSeeProcs ? await settle(work) : [];
+
     console.log('\ne2e: dynamic witness');
     t('the attack actually works on base (a vacuous witness proves nothing)', () => {
       assert.strictEqual(results.honest.pre.signal, true);
@@ -151,8 +175,19 @@ const freePort = () => new Promise((res) => {
       const hdrs = Object.values(tr[0].headers);
       assert.ok(hdrs.length > 0 && !hdrs.includes(undefined));
     });
+    t('witnessObligations boots both trees and reports the honest fix as passing', () => {
+      assert.strictEqual(obligations.differential_witness.status, 'pass');
+      assert.strictEqual(obligations.functional_control.status, 'pass');
+    });
+    t('no app is left running after the witness shuts down', () => {
+      if (!canSeeProcs) { console.log('         (skipped: no /proc on this platform)'); return; }
+      assert.deepStrictEqual(leftAfterBoots, [], `apps still running after boot().kill(): ${leftAfterBoots}`);
+      assert.deepStrictEqual(leftAfterObligations, [],
+        `apps still running after witnessObligations returned: ${leftAfterObligations}`);
+    });
     await Promise.all(pending);
   } finally {
+    if (canSeeProcs) for (const pid of runningUnder(work)) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
     fs.rmSync(work, { recursive: true, force: true });
   }
 
