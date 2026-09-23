@@ -10,9 +10,15 @@
 import fs from 'fs';
 import { execFileSync } from 'child_process';
 
+// One entry per fixer call, in order; the last entry repeats.
+type FixStep = { act: 'patch' | 'crash' | 'cannot_fix' | 'disable'; witness?: boolean; reason?: string; stray?: boolean; commit?: boolean };
+type Scenario = { log: string; triage: Record<string, unknown>; fix: FixStep[]; audit?: unknown };
+
 const argv = process.argv.slice(2);
 const prompt = argv[argv.indexOf('-p') + 1] || '';
-const scenario = JSON.parse(fs.readFileSync(process.env.SAST_FAKE_CLAUDE, 'utf8'));
+const scenarioFile = process.env.SAST_FAKE_CLAUDE;
+if (!scenarioFile) { process.stderr.write('SAST_FAKE_CLAUDE is not set\n'); process.exit(3); }
+const scenario = JSON.parse(fs.readFileSync(scenarioFile, 'utf8')) as Scenario;
 
 const role = prompt.startsWith('Refute this candidate') ? 'triage'
   : prompt.startsWith('Make the invariant below true') ? 'fix'
@@ -23,7 +29,7 @@ const priorCalls = fs.existsSync(scenario.log)
   : [];
 fs.appendFileSync(scenario.log, `${JSON.stringify({ role, cwd: process.cwd(), argv })}\n`);
 
-const answer = (obj) => {
+const answer = (obj: unknown): never => {
   process.stdout.write(JSON.stringify([
     { type: 'system', subtype: 'init' },
     { type: 'result', subtype: 'success', is_error: false, result: `Done.\n${JSON.stringify(obj)}` },
@@ -56,7 +62,7 @@ const AUDIT_PASS = {
   uncovered_siblings: [], explanation: 'the traversal name is not in the allowlist, so the read never runs',
 };
 
-function patch(step) {
+function patch(step: FixStep): void {
   const src = 'src/routes/files.js';
   const raw = fs.readFileSync(src, 'utf8');
   // `disable` keeps the sink line intact and makes it unreachable, instead of enforcing the
@@ -103,3 +109,5 @@ if (role === 'audit') answer(scenario.audit || AUDIT_PASS);
 
 process.stderr.write(`fake claude has no answer for a ${role} prompt\n`);
 process.exit(3);
+
+export type { FixStep, Scenario };

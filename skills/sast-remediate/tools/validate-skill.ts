@@ -10,8 +10,8 @@ import { validate } from '../bin/validate.ts';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 let fail = 0;
-const ok = (m) => console.log(`  ok   ${m}`);
-const bad = (m) => { fail++; console.log(`  FAIL ${m}`); };
+const ok = (m: string) => console.log(`  ok   ${m}`);
+const bad = (m: string) => { fail++; console.log(`  FAIL ${m}`); };
 
 // ---- frontmatter
 const skillPath = path.join(ROOT, 'SKILL.md');
@@ -63,14 +63,14 @@ for (const f of fs.readdirSync(schemaDir).filter((x) => x.endsWith('.json'))) {
   const p = path.join(schemaDir, f);
   let doc;
   try { doc = JSON.parse(fs.readFileSync(p, 'utf8')); }
-  catch (e) { bad(`${f} does not parse: ${e.message}`); continue; }
+  catch (e) { bad(`${f} does not parse: ${e instanceof Error ? e.message : e}`); continue; }
   const refs = [...JSON.stringify(doc).matchAll(/"\$ref":"([^"]+)"/g)].map((m) => m[1]);
   let broke = false;
   for (const r of refs) {
     try {
       // Exercise the real resolver by validating a value that must reach the ref.
       validate({ $ref: r, ...(doc.$defs ? { $defs: doc.$defs } : {}) }, null, schemaDir);
-    } catch (e) { broke = true; bad(`${f}: ref ${r} does not resolve (${e.message})`); }
+    } catch (e) { broke = true; bad(`${f}: ref ${r} does not resolve (${e instanceof Error ? e.message : e})`); }
   }
   if (!broke) ok(`${f} parses, ${refs.length} refs resolve`);
 }

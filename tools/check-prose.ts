@@ -46,9 +46,9 @@ const RULES = [
 // symbols, real commands and real paths, which this skill says to write verbatim.
 // Every mask must preserve newlines, or reported line numbers drift. The link mask used to
 // blank newlines inside a wrapped link target and shifted every later line by two.
-const blank = (m) => m.replace(/[^\n]/g, ' ');
+const blank = (m: string) => m.replace(/[^\n]/g, ' ');
 
-function maskCode(text) {
+function maskCode(text: string): string {
   return text
     .replace(/```[\s\S]*?```/g, blank)
     .replace(/`[^`\n]*`/g, blank)
@@ -56,7 +56,7 @@ function maskCode(text) {
     .replace(/\]\([^)]*\)/g, blank);
 }
 
-function walk(dir, out) {
+function walk(dir: string, out: string[]): string[] {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     if (e.name.startsWith('.') && e.name !== '.claude') continue;
     if (SKIP_DIRS.has(e.name)) continue;
@@ -69,7 +69,7 @@ function walk(dir, out) {
 
 type Hit = { rule: string; why: string; line: number; text: string };
 
-function check(file) {
+function check(file: string): Hit[] {
   const raw = fs.readFileSync(file, 'utf8');
   const text = maskCode(raw);
   const lines = raw.split('\n');
