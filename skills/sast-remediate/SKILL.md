@@ -183,7 +183,10 @@ proven but is **not enabled by default**. It is opt-in, tracked in
 
 ## Tools
 
-All zero-dependency Node. Nothing is installed into the target.
+All TypeScript that Node 22.18 or newer runs directly, with no build step and no dependencies.
+Nothing is installed into the target. Types for the finding records are generated from
+`schema/finding.schema.json` by `tools/gen-schema-types.ts`. The type check is a developer tool:
+run `npm install` once at the repository root, and `test/run-all.sh` runs it with the tests.
 
 `bin/scan.ts` runs the scanners, CodeQL once per detected language, and decides which rescan
 results a patch introduced. `bin/leak-guard.ts` holds `assertNoLeak`, the check that keeps
