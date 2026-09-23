@@ -14,7 +14,7 @@ const ROOT = path.resolve(__dirname, '..');
 const REPO = path.resolve(ROOT, '../../fixtures/vuln-app');
 const SCHEMA_DIR = path.join(ROOT, 'schema');
 
-const R = require(path.join(ROOT, 'bin/run.cjs'));
+const R = require(path.join(ROOT, 'bin/run.ts'));
 const S = require(path.join(ROOT, 'bin/scan.ts'));
 const { normalize, makeRepo } = require(path.join(ROOT, 'bin/normalize.ts'));
 const { validate } = require(path.join(ROOT, 'bin/validate.ts'));

@@ -58,14 +58,14 @@ The deterministic core is built and tested. `bin/normalize.ts`, `bin/validate.ts
 `bin/gate.ts`, `bin/stage.ts`, `bin/patch-guard.ts`, and the `dynamic` tier of
 `bin/witness-run.ts` all work and are covered by `test/run-all.sh`.
 
-`bin/run.cjs` drives them. One command runs every stage: `run.cjs --target=DIR`. It spawns the
+`bin/run.ts` drives them. One command runs every stage: `run.ts --target=DIR`. It spawns the
 triage and fix agents through `bin/agent.ts`, orders fix work with `order()` from `bin/gate.ts`,
 and writes the artifacts with `bin/report.ts`. Re-running it is the resume path.
 Agents run with the target's Claude settings, `CLAUDE.md` and hooks shut out. Each gets only the
 tools its role needs, and none gets a shell. The harness, not the fixer, commits each fix, and
 only the files the fixer declared. See `references/FIX-AND-VERIFY.md`.
 
-The `dynamic` witness tier is wired into `run.cjs` behind `--witness=dynamic`: it boots the target
+The `dynamic` witness tier is wired into `run.ts` behind `--witness=dynamic`: it boots the target
 application twice and sends the attack and a control exchange to both. At `full`, an `argued`
 witness records obligations 3 and 4 unavailable with the obstacle, still runs the regression
 suite, the rescan and the hostile auditor, and lands as `fixed_unwitnessed` after one attempt.

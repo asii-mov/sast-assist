@@ -545,7 +545,7 @@ t('a path outside the root is null, which foldSites counts as a drop', () => {
 });
 
 t('the same defect scanned by absolute and relative path gets ONE id', () => {
-  // The live failure this guards: run.cjs rescans a worktree by absolute path, so every
+  // The live failure this guards: run.ts rescans a worktree by absolute path, so every
   // surviving finding minted a fresh id and no_new_findings could never pass.
   const absRaw = JSON.parse(JSON.stringify(raw));
   for (const r of absRaw.semgrep.results) r.path = path.join(REPO, r.path);

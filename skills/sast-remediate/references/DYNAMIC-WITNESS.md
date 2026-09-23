@@ -1,7 +1,7 @@
 # Dynamic witness
 
 **Status: wired and opt-in via `--witness=dynamic`.** No tier-selection function exists yet, so
-nothing chooses this tier automatically; `run.cjs` offers it to triage only when a harness was
+nothing chooses this tier automatically; `run.ts` offers it to triage only when a harness was
 discovered in the target, otherwise triage is offered `argued` only. It is tracked in
 `design/FUTURE-IMPROVEMENTS.md`, which lists what to settle before turning it on by default.
 

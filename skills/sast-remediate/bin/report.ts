@@ -64,7 +64,7 @@ function boundaryFor(f) {
 
 // ---------------------------------------------------------------------- disposition reading
 
-// bin/run.cjs judges each finding once, with the run's verify level. A finding it has not
+// bin/run.ts judges each finding once, with the run's verify level. A finding it has not
 // judged yet is `pending`.
 function byState(findings) {
   const groups = new Map();

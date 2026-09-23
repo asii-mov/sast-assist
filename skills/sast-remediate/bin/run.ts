@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-'use strict';
 // The driver. One command runs scan, normalize, pre-resolve, triage, gate, fix, verify, report.
 //
 // Every stage re-derives itself from what is on disk via stageOf, so re-running the command is
@@ -11,24 +10,30 @@
 // id or message, or contract prose that names a scanner or has the form of a rule id. A finding
 // record is never handed to a fixer whole.
 
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const crypto = require('crypto');
-const { spawnSync } = require('child_process');
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import crypto from 'crypto';
+import { spawnSync } from 'child_process';
 
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(import.meta.dirname, '..');
 const FINDING_SCHEMA = path.join(ROOT, 'schema/finding.schema.json');
 const AGENT_SCHEMA = path.join(ROOT, 'schema/agent-results.schema.json');
 
-const { stageOf, evaluateVerification, VERIFY_LEVELS, excused } = require('./stage.ts');
-const { gate, order } = require('./gate.ts');
-const { normalize, makeRepo } = require('./normalize.ts');
-const { runScanners, onPath, trim, baselineOf, rescan, DEFAULT_SCAN_CONFIG, SUITE_NAME, semgrepConfigArg, SCANNERS } = require('./scan.ts');
-const { validate } = require('./validate.ts');
-const { guardDiff } = require('./patch-guard.ts');
-const { defaultOutDir, readRecorded, mergeExisting, clearAttempt, incompleteReason } = require('./resume.ts');
-const { assertNoLeak, leakError, recordTerms, authoredProse } = require('./leak-guard.ts');
+import { stageOf, evaluateVerification, VERIFY_LEVELS, excused } from './stage.ts';
+import type { Patch, Verification, Evaluation, ObligationResult } from './stage.ts';
+import type { ScanConfig } from './scan.ts';
+import { gate, order } from './gate.ts';
+import { normalize, makeRepo } from './normalize.ts';
+import { runScanners, onPath, trim, baselineOf, rescan, DEFAULT_SCAN_CONFIG, SUITE_NAME, semgrepConfigArg, SCANNERS } from './scan.ts';
+import { validate } from './validate.ts';
+import { guardDiff } from './patch-guard.ts';
+import { defaultOutDir, readRecorded, mergeExisting, clearAttempt, incompleteReason } from './resume.ts';
+import { assertNoLeak, leakError, recordTerms, authoredProse } from './leak-guard.ts';
+import { runAgent } from './agent.ts';
+import { renderRemediation, renderHandoff } from './report.ts';
+import { witnessObligations } from './witness-run.ts';
+import { discoverAppHarness } from './app-harness.ts';
 
 // --out is operator-controlled and git rejects spaces, `~ ^ : ? * [ \\`, `..` and a leading dot.
 const refSafe = (s) => String(s).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/\.{2,}/g, '.')
@@ -43,7 +48,7 @@ const worktreeRootFor = (outDir) =>
 
 // ------------------------------------------------------------------------ cli
 
-const USAGE = `usage: run.cjs --target=DIR [options]
+const USAGE = `usage: run.ts --target=DIR [options]
   --target=DIR        repository to remediate (required)
   --out=DIR           output dir (default: continue the latest unfinished run of this
                       commit under ~/sast-remediate/<repo>/, else start run-<N+1>)
@@ -116,7 +121,7 @@ function parseArgs(argv) {
 
 // Everything that touches a process or an agent arrives through here, so a test drives the whole
 // pipeline without a scanner, a network or a real model.
-function realExec(cmd, args, o = {}) {
+function realExec(cmd, args, o: { cwd?: string; timeoutMs?: number } = {}) {
   const r = spawnSync(cmd, args, {
     cwd: o.cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
     timeout: o.timeoutMs || 900000, env: process.env,
@@ -128,14 +133,11 @@ function realExec(cmd, args, o = {}) {
   };
 }
 
-// Each collaborator is resolved at the moment it is used, so a plan still prints and a
-// triage-only run still finishes when a module a later stage needs is missing.
 function realDeps() {
-  const lazy = (mod, name) => (...a) => require(mod)[name](...a);
   return {
-    runAgent: lazy('./agent.ts', 'runAgent'),
-    renderRemediation: lazy('./report.ts', 'renderRemediation'),
-    renderHandoff: lazy('./report.ts', 'renderHandoff'),
+    runAgent,
+    renderRemediation,
+    renderHandoff,
     exec: realExec,
     onPath,
     log: (m) => console.error(m),
@@ -149,7 +151,7 @@ const readJson = (f) => JSON.parse(fs.readFileSync(f, 'utf8'));
 
 // ------------------------------------------------------------------- 1. scan
 
-const TEST_COMMANDS = [
+const TEST_COMMANDS: [marker: string, make: (root: string) => string | null][] = [
   ['package.json', (root) => {
     const pkg = readJson(path.join(root, 'package.json'));
     return pkg.scripts && pkg.scripts.test ? 'npm test' : null;
@@ -183,7 +185,7 @@ function normalizeAndValidate(raw, target, runId) {
 // Path policy. A rejection here is a policy call, not a security claim, and it produces a real
 // triage with established_by deterministic_prepass rather than a skipped state, so nothing
 // downstream has to special-case a finding that never saw an agent.
-const POLICY_PATHS = [
+const POLICY_PATHS: [kind: string, pattern: RegExp][] = [
   ['test', /(^|\/)(tests?|spec|specs|__tests__|testdata|fixtures?)(\/|$)|[._-](test|spec)\.[A-Za-z0-9]+$|_test\.go$/i],
   ['vendor', /(^|\/)(vendor|node_modules|third[_-]?party|bower_components|\.venv|site-packages)(\/|$)/i],
   ['generated', /(^|\/)(generated|gen|build|dist|out|target)(\/|$)|\.(pb|generated)\.[A-Za-z0-9]+$|_pb2\.py$/i],
@@ -261,7 +263,7 @@ function bundleDef(name) {
   const walk = (node) => {
     if (Array.isArray(node)) return node.map(walk);
     if (!node || typeof node !== 'object') return node;
-    const out = {};
+    const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(node)) {
       const m = k === '$ref' && typeof v === 'string' ? DEF_REF.exec(v) : null;
       if (m) {
@@ -467,7 +469,7 @@ async function fixOne(f, ctx) {
       detail: `fixer_prompt_leak: ${leak}`, verification: {} });
     return;
   }
-  const patch = {
+  const patch: Patch = {
     attempt, branch, worktree: wt,
     contract_hash: sha256(JSON.stringify(f.triage.contract)),
     outcome: null, declared_files: [], enforcement_note: null, verification: null,
@@ -494,7 +496,7 @@ async function fixOne(f, ctx) {
   patch.enforcement_note = res.data.enforcement_note;
   patch.verification = await verifyPatch(f, patch, ctx);
   patch.typed_failures = evaluateVerification(patch.verification, VERIFY_LEVELS[ctx.opts.verify], f.triage.contract.witness.tier)
-    .failed.map((o) => ({ obligation: o, reason: (patch.verification[o] || {}).reason || 'failed' }));
+    .failed.map((o) => ({ obligation: o, reason: patch.verification?.[o]?.reason || 'failed' }));
 }
 
 async function fixAll(findings, ctx) {
@@ -523,7 +525,7 @@ async function fixAll(findings, ctx) {
 // so evaluateVerification reports it as skipped rather than as anything that passed.
 async function verifyPatch(f, patch, ctx) {
   const required = new Set(VERIFY_LEVELS[ctx.opts.verify]);
-  const v = {};
+  const v: Verification = {};
   const contract = f.triage.contract;
   const wt = patch.worktree;
   const tier = contract.witness.tier;
@@ -547,7 +549,7 @@ async function verifyPatch(f, patch, ctx) {
       stopped = true;
     } else {
       const g = guardDiff(diff, contract, {
-        sinkFiles: [...new Set(f.sites.map((s) => s.locus.file))],
+        sinkFiles: [...new Set<string>(f.sites.map((s) => s.locus.file))],
         sinkText: f.flow.kind === 'traced' ? f.flow.steps[f.flow.steps.length - 1].code : f.flow.sink.code,
       });
       v.deterministic_guard = g.passed ? { status: 'pass' }
@@ -616,7 +618,7 @@ function runCommand(cmd, cwd, ctx) {
   return ctx.deps.exec(parts[0], parts.slice(1), { cwd });
 }
 
-function runRegressionSuite(patch, ctx) {
+function runRegressionSuite(patch, ctx): ObligationResult {
   if (!ctx.testCommand) return { status: 'unavailable', reason: 'no_test_command_discovered' };
   const base = baseTree(ctx);
   if (base && runCommand(ctx.testCommand, base, ctx).status !== 0) {
@@ -627,8 +629,7 @@ function runRegressionSuite(patch, ctx) {
   return r.status === 0 ? { status: 'pass' } : { status: 'fail', reason: trim(r.stdout + r.stderr) };
 }
 
-async function runDifferentialWitness(contract, patch, ctx) {
-  const { witnessObligations } = require('./witness-run.ts');
+async function runDifferentialWitness(contract, patch, ctx): Promise<{ differential_witness: ObligationResult; functional_control?: ObligationResult }> {
   const w = contract.witness;
   try {
     return await witnessObligations(w,
@@ -639,7 +640,7 @@ async function runDifferentialWitness(contract, patch, ctx) {
   }
 }
 
-function runFunctionalControl(contract, patch, ctx) {
+function runFunctionalControl(contract, patch, ctx): ObligationResult {
   const c = contract.witness.control;
   if (!c || c.kind === 'unavailable') {
     return { status: 'unavailable', reason: (c && c.why) || 'no_control_authored' };
@@ -678,7 +679,7 @@ function buildAuditPrompt(f, patch, diff) {
   ].join('\n');
 }
 
-async function runAudit(f, patch, diff, ctx) {
+async function runAudit(f, patch, diff, ctx): Promise<ObligationResult> {
   if (!patch.enforcement_note) return { status: 'fail', reason: 'no_patch_to_audit' };
   const prompt = buildAuditPrompt(f, patch, diff);
   // The auditor may name the rule in its own reasoning, but it must not be handed one.
@@ -723,7 +724,7 @@ function dispositionFor(f, level) {
   // including `none`, where an empty verification would otherwise count as verified.
   const ev = last.outcome === 'patched'
     ? evaluateVerification(last.verification, VERIFY_LEVELS[level], tier)
-    : { verified: false, failed: [], missing: [] };
+    : { verified: false, failed: [], unavailable: [], missing: [], skipped: [] } satisfies Evaluation;
   if (!ev.verified) {
     return { state: 'fix_failed', branch, attempts: f.patches.length, outcome: last.outcome,
       detail: last.detail, failed: ev.failed, missing: ev.missing, worktree: last.worktree };
@@ -820,7 +821,7 @@ async function run(opts, deps = realDeps()) {
 
   const testCommand = discoverTestCommand(target);
   let appHarness = [];
-  try { appHarness = require('./app-harness.ts').discoverAppHarness(target); } catch { /* optional */ }
+  try { appHarness = discoverAppHarness(target); } catch { /* an unreadable tree has no harness */ }
   const dynamicOffered = opts.witness === 'dynamic' && appHarness.length > 0;
   if (opts.witness === 'dynamic' && !dynamicOffered) {
     deps.log('--witness=dynamic: no app harness discovered, so triage is offered argued only');
@@ -904,7 +905,7 @@ async function main(argv) {
   }
 }
 
-module.exports = {
+export {
   bundleDef,
   leakError,
   refSafe,
@@ -915,4 +916,4 @@ module.exports = {
   discoverTestCommand, normalizeAndValidate, planLines, realExec,
 };
 
-if (require.main === module) main(process.argv.slice(2)).then((c) => process.exit(c));
+if (import.meta.main) main(process.argv.slice(2)).then((c) => process.exit(c));

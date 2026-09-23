@@ -6,13 +6,16 @@ import fs from 'fs';
 import path from 'path';
 import { normalize, makeRepo } from './normalize.ts';
 import type { RawScans } from './normalize.ts';
+import type { ObligationResult } from './stage.ts';
 
 const ensureDir = (d) => fs.mkdirSync(d, { recursive: true });
 const readJson = (f) => JSON.parse(fs.readFileSync(f, 'utf8'));
 const writeJson = (f, v) => fs.writeFileSync(f, JSON.stringify(v, null, 2));
 const trim = (s) => String(s || '').trim().split('\n').slice(-3).join(' ').slice(0, 300);
 
-const DEFAULT_SCAN_CONFIG = Object.freeze({ semgrep: ['p/default'], codeql_suite: 'security-extended' });
+type ScanConfig = { semgrep: string[]; codeql_suite: string };
+
+const DEFAULT_SCAN_CONFIG: Readonly<ScanConfig> = Object.freeze({ semgrep: ['p/default'], codeql_suite: 'security-extended' });
 const SUITE_NAME = /^[a-z0-9][a-z0-9-]*$/;
 // A local rules file is stored absolute so a resume from another directory scans identically.
 const semgrepConfigArg = (c) => (fs.existsSync(c) ? path.resolve(c) : c);
@@ -168,7 +171,7 @@ function baselineOf(raw, findings, scanConfig, scanners) {
   };
 }
 
-function rescan(finding, worktree, scanDir, { deps, runId, baseline }) {
+function rescan(finding, worktree, scanDir, { deps, runId, baseline }): { obligation: ObligationResult; rescan: object } {
   const { raw, scanners } = runScanners(
     { scans: null, scanners: baseline.scanners, scanConfig: baseline.scanConfig, languages: baseline.languages },
     deps, worktree, scanDir);
@@ -190,6 +193,7 @@ function rescan(finding, worktree, scanDir, { deps, runId, baseline }) {
   };
 }
 
+export type { ScanConfig };
 export {
   runScanners, detectLanguages, onPath, trim, baselineOf, rescan,
   DEFAULT_SCAN_CONFIG, SUITE_NAME, semgrepConfigArg, parseScanConfig, SCANNERS,

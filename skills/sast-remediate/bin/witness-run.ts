@@ -9,6 +9,7 @@ import net from 'net';
 import http from 'http';
 import { boot } from './app-harness.ts';
 import type { HttpResult } from './app-harness.ts';
+import type { ObligationResult } from './stage.ts';
 
 const REDACT_ALLOW = new Set(['content-type', 'content-length', 'location', 'x-request-id']);
 
@@ -167,13 +168,15 @@ const freePort = (): Promise<number> => new Promise((resolve) => {
   s.listen(0, '127.0.0.1', () => { const p = (s.address() as net.AddressInfo).port; s.close(() => resolve(p)); });
 });
 
-const unavailable = (reason) => ({ status: 'unavailable', reason });
+const unavailable = (reason: string): ObligationResult => ({ status: 'unavailable', reason });
 
 // Answers obligations 3 and 4 (differential_witness, functional_control) for one tier, one
 // attempt. The caller writes the result into patch.verification without reinterpreting it: this
 // is the one place that knows what each tier can and cannot prove. Rows follow
 // docs/plans/R5-verify-full.md section 3 in order.
-async function witnessObligations(w, { baseDir, headDir, harnesses }, { allowDynamic = false } = {}) {
+type WitnessObligations = { differential_witness: ObligationResult; functional_control?: ObligationResult };
+
+async function witnessObligations(w, { baseDir, headDir, harnesses }, { allowDynamic = false } = {}): Promise<WitnessObligations> {
   if (w.tier === 'argued') {
     return {
       differential_witness: unavailable(`argued_tier:${w.obstacle}`),
@@ -202,7 +205,7 @@ async function witnessObligations(w, { baseDir, headDir, harnesses }, { allowDyn
 
     h = await boot(harness, headDir, { port: await freePort() });
     if (!h.ok) {
-      const fail = { status: 'fail', reason: `patched_tree_did_not_boot:${h.why}` };
+      const fail: ObligationResult = { status: 'fail', reason: `patched_tree_did_not_boot:${h.why}` };
       return { differential_witness: fail, functional_control: fail };
     }
 

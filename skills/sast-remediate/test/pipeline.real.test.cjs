@@ -16,7 +16,7 @@ const { execFileSync } = require('child_process');
 const ROOT = path.resolve(__dirname, '..');
 const FIXTURE = path.resolve(ROOT, '../../fixtures/vuln-app');
 const SCANS = path.join(ROOT, 'test/fixtures');
-const R = require(path.join(ROOT, 'bin/run.cjs'));
+const R = require(path.join(ROOT, 'bin/run.ts'));
 const { runAgent } = require(path.join(ROOT, 'bin/agent.ts'));
 const { renderRemediation, renderHandoff } = require(path.join(ROOT, 'bin/report.ts'));
 

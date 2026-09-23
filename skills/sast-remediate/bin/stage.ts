@@ -8,6 +8,7 @@
 // prevent.
 
 import fs from 'fs';
+import type { AgentAudit } from '../schema/types.ts';
 
 // ---------------------------------------------------------------------- stage
 
@@ -56,7 +57,32 @@ const OBLIGATIONS = [
   'regression_suite',
   'no_new_findings',
   'hostile_auditor',
-];
+] as const;
+type Obligation = typeof OBLIGATIONS[number];
+
+// The schema leaves patches untyped, so the obligations above are the source of this shape.
+type ObligationResult =
+  | { status: 'pass'; reason?: undefined; detail?: string; transcript?: unknown[]; stopped_at?: unknown }
+  | { status: 'fail' | 'unavailable'; reason: string; transcript?: unknown[]; violations?: unknown[]; new_findings?: string[] };
+type Verification = Partial<Record<Obligation, ObligationResult>> & { rescan?: unknown };
+
+type Patch = {
+  attempt: number;
+  branch: string;
+  worktree: string;
+  contract_hash?: string;
+  outcome: 'patched' | 'cannot_fix' | 'error' | 'refused' | null;
+  declared_files?: string[];
+  enforcement_note?: string | null;
+  verification: Verification | null;
+  reason?: string;
+  detail?: string;
+  typed_failures?: { obligation: Obligation; reason: string }[];
+  diff_bytes?: number;
+  audit?: AgentAudit;
+};
+
+type Evaluation = { verified: boolean; failed: Obligation[]; unavailable: Obligation[]; missing: Obligation[]; skipped: Obligation[] };
 
 // A red suite on base is not the patch's fault, and a rescan whose scanners produced nothing
 // says nothing about the patch, so these two may be unavailable without sinking the verdict.
@@ -75,12 +101,12 @@ const excused = (name, tier) => MAY_BE_UNAVAILABLE.has(name) || (tier === 'argue
 // cannot pass, fail or rescue anything, and it is reported as skipped so the report can say so.
 // `tier` is the frozen contract's witness tier, used only to excuse the argued pair above; it
 // never comes from the verification record itself, so a patch cannot excuse itself.
-function evaluateVerification(verification, required = OBLIGATIONS, tier = null) {
+function evaluateVerification(verification: Verification | null, required: readonly Obligation[] = OBLIGATIONS, tier: string | null = null): Evaluation {
   const req = new Set(required);
-  const failed = [];
-  const unavailable = [];
-  const missing = [];
-  const skipped = [];
+  const failed: Obligation[] = [];
+  const unavailable: Obligation[] = [];
+  const missing: Obligation[] = [];
+  const skipped: Obligation[] = [];
 
   for (const name of OBLIGATIONS) {
     if (!req.has(name)) { skipped.push(name); continue; }
@@ -104,12 +130,13 @@ function evaluateVerification(verification, required = OBLIGATIONS, tier = null)
 // pair, which needs a bootable target, and the auditor, which costs an agent call. `none`
 // records the patch without judging it and is only honest because the report says which level
 // ran. A fix verified at `cheap` is never reported as verified at `full`.
-const VERIFY_LEVELS = {
+const VERIFY_LEVELS: Record<'none' | 'cheap' | 'full', readonly Obligation[]> = {
   none: [],
   cheap: ['frozen_target', 'deterministic_guard', 'regression_suite', 'no_new_findings'],
   full: OBLIGATIONS,
 };
 
+export type { Obligation, ObligationResult, Verification, Patch, Evaluation };
 export {
   stageOf, evaluateVerification, STAGES, OBLIGATIONS, MAY_BE_UNAVAILABLE, VERIFY_LEVELS, excused,
 };

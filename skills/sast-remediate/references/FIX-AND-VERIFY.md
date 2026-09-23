@@ -216,7 +216,7 @@ having the tier at all.
 
 ## Integration
 
-**Not implemented.** `bin/run.cjs` stops after verification and leaves each verified fix on its
+**Not implemented.** `bin/run.ts` stops after verification and leaves each verified fix on its
 own branch; nothing cherry-picks, re-runs or bisects yet. The rest of this section is the
 specification.
 
