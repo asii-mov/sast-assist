@@ -39,7 +39,7 @@ for (const f of mdFiles) {
   const cited = new Set();
   // Only paths with a known extension are OURS. `bin/rails` and `config.ru` in prose are
   // paths in the TARGET repo and must not be resolved against this skill.
-  for (const m of text.matchAll(/`((?:references|schema|bin|test|tools)\/[A-Za-z0-9_.\-]+\.(?:cjs|json|md))`/g)) cited.add(m[1]);
+  for (const m of text.matchAll(/`((?:references|schema|bin|test|tools)\/[A-Za-z0-9_.\-]+\.(?:cjs|ts|json|md))`/g)) cited.add(m[1]);
   for (const m of text.matchAll(/\]\(([^)]+\.md)\)/g)) cited.add(m[1]);
   for (const rel of cited) {
     refCount++;
@@ -78,7 +78,7 @@ for (const f of fs.readdirSync(schemaDir)) {
 
 // ---- tools parse
 for (const dir of ['bin', 'tools', 'test']) {
-  for (const f of fs.readdirSync(path.join(ROOT, dir)).filter((x) => x.endsWith('.cjs'))) {
+  for (const f of fs.readdirSync(path.join(ROOT, dir)).filter((x) => /\.(cjs|ts)$/.test(x))) {
     const p = path.join(ROOT, dir, f);
     try { execFileSync(process.execPath, ['--check', p], { stdio: 'pipe' }); ok(`${dir}/${f} parses`); }
     catch (e) { bad(`${dir}/${f} syntax error`); }
@@ -95,9 +95,9 @@ const EXTERNAL_IDENTS = new Set([
   'partialFingerprints', // a SARIF field on the scanner's side of the boundary, not ours
 ]);
 const defined = new Set();
-for (const f of fs.readdirSync(path.join(ROOT, 'bin')).filter((x) => x.endsWith('.cjs'))) {
+for (const f of fs.readdirSync(path.join(ROOT, 'bin')).filter((x) => /\.(cjs|ts)$/.test(x))) {
   const text = fs.readFileSync(path.join(ROOT, 'bin', f), 'utf8');
-  for (const m of text.matchAll(/(?:function\s+|const\s+|let\s+)([A-Za-z_$][\w$]*)\s*[=(]/g)) {
+  for (const m of text.matchAll(/(?:function\s+|const\s+|let\s+)([A-Za-z_$][\w$]*)\s*(?::[^=;]+)?[=(<]/g)) {
     defined.add(m[1]);
   }
 }
