@@ -6,6 +6,7 @@
 // originates inside the target-controlled process and never has to be promoted out of it.
 // That is why this skill carries no file-promotion procedure.
 
+const net = require('net');
 const http = require('http');
 const { boot } = require('./app-harness.cjs');
 
@@ -160,4 +161,63 @@ async function runWitnessInner(w, trees) {
   return { ...result, transcript, failure: classify(result) };
 }
 
-module.exports = { runWitness, runDynamic, observed, request, boot };
+const freePort = () => new Promise((resolve) => {
+  const s = net.createServer();
+  s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); });
+});
+
+const unavailable = (reason) => ({ status: 'unavailable', reason });
+
+// Answers obligations 3 and 4 (differential_witness, functional_control) for one tier, one
+// attempt. The caller writes the result into patch.verification without reinterpreting it: this
+// is the one place that knows what each tier can and cannot prove. Rows follow
+// docs/plans/R5-verify-full.md section 3 in order.
+async function witnessObligations(w, { baseDir, headDir, harnesses }, { allowDynamic = false } = {}) {
+  if (w.tier === 'argued') {
+    return {
+      differential_witness: unavailable(`argued_tier:${w.obstacle}`),
+      functional_control: unavailable('argued_tier_has_no_control'),
+    };
+  }
+  if (w.tier !== 'dynamic') {
+    return { differential_witness: unavailable(`tier_not_implemented:${w.tier}`) };
+  }
+  if (!allowDynamic) {
+    return { differential_witness: unavailable('dynamic_tier_not_enabled') };
+  }
+  if (!baseDir) {
+    return { differential_witness: unavailable('no_base_tree') };
+  }
+  const harness = (harnesses || []).find((h) => h.id === w.harness_id);
+  if (!harness) {
+    return { differential_witness: unavailable(`no_app_harness:${w.harness_id}`) };
+  }
+
+  // boot() returns a no-op kill on failure, so calling it unconditionally in the finally is safe.
+  const b = await boot(harness, baseDir, { port: await freePort() });
+  let h = null;
+  try {
+    if (!b.ok) return { differential_witness: unavailable(`base_did_not_boot:${b.why}`) };
+
+    h = await boot(harness, headDir, { port: await freePort() });
+    if (!h.ok) {
+      const fail = { status: 'fail', reason: `patched_tree_did_not_boot:${h.why}` };
+      return { differential_witness: fail, functional_control: fail };
+    }
+
+    const r = await runWitness(w, { base: b, head: h }, { allowDynamic: true });
+    const out = {};
+    out.differential_witness = r.differential_ok
+      ? { status: 'pass', detail: r.post.detail, transcript: r.transcript }
+      : { status: 'fail', reason: r.failure || 'witness_not_differential', transcript: r.transcript };
+    out.functional_control = r.control_ok
+      ? { status: 'pass', detail: r.control.detail }
+      : { status: 'fail', reason: r.control.passed_pre === false ? 'control_failed_on_base' : 'control_failed_on_patched_tree' };
+    return out;
+  } finally {
+    b.kill();
+    if (h) h.kill();
+  }
+}
+
+module.exports = { runWitness, runDynamic, observed, request, boot, witnessObligations, freePort };

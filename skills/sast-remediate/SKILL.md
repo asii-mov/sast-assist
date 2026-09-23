@@ -36,10 +36,15 @@ Resolve before anything else.
 
 - **Skill directory.** The absolute directory holding this file.
 - **Target.** The repository root under review.
-- **Output directory.** Outside the target. Default `~/sast-remediate/<repo>/run-<N>`. Inside the
-  target only when the user picks it and version control ignores it.
+- **Output directory.** Outside the target. Default: the latest `~/sast-remediate/<repo>/run-<N>`
+  when that run is unfinished and was started on the same commit, otherwise a new `run-<N+1>`.
+  `--out` always wins. Inside the target only when the user picks it and version control ignores it.
 - **Base commit.** The reviewed commit, and whether the worktree is dirty.
-- **Policy.** `fix_at` defaults to `medium`. `allow_unverified_fixes` defaults to false.
+- **Policy.** `fix_at` defaults to `medium`.
+- **Scanner configuration.** `--semgrep-config` (default `p/default`) and `--codeql-suite` (default
+  `security-extended`). The baseline scan and every rescan use it, and `run-metadata.json` records
+  it, so a resumed run rescans with the same rules. With `--scans`, pass the rules those scans were
+  made with, or every rescan hit counts as new.
 
 ## Write isolation
 
@@ -54,8 +59,16 @@ The deterministic core is built and tested. `bin/normalize.cjs`, `bin/validate.c
 `bin/witness-run.cjs` all work and are covered by `test/run-all.sh`.
 
 `bin/run.cjs` drives them. One command runs every stage: `run.cjs --target=DIR`. It spawns the
-triage and fix agents through `bin/agent.cjs`, partitions fix work with `bin/partition.cjs`, and
-writes the artifacts with `bin/report.cjs`. Re-running it is the resume path.
+triage and fix agents through `bin/agent.cjs`, orders fix work with `order()` from `bin/gate.cjs`,
+and writes the artifacts with `bin/report.cjs`. Re-running it is the resume path.
+Agents run with the target's Claude settings, `CLAUDE.md` and hooks shut out. Each gets only the
+tools its role needs, and none gets a shell. The harness, not the fixer, commits each fix, and
+only the files the fixer declared. See `references/FIX-AND-VERIFY.md`.
+
+The `dynamic` witness tier is wired into `run.cjs` behind `--witness=dynamic`: it boots the target
+application twice and sends the attack and a control exchange to both. At `full`, an `argued`
+witness records obligations 3 and 4 unavailable with the obstacle, still runs the regression
+suite, the rescan and the hostile auditor, and lands as `fixed_unwitnessed` after one attempt.
 
 Still unwritten: the integration branch (cherry-pick, combined re-run, bisection), the
 `executable` and `structural` witness tiers, tier selection, the `row_appears` observable, and
@@ -66,7 +79,10 @@ at `cheap` is not a fix verified at `full`, and the report says which ran.
 
 ## Stages
 
-Stage is derived from the record's shape by `stageOf` in `bin/stage.cjs`, never stored.
+Stage is derived from the record's shape and the run's verify level by `stageOf` in
+`bin/stage.cjs`, never stored. `run-metadata.json` records the level, so a resumed run judges
+with the level it started at. A finding's saved `disposition` is its final outcome, and the
+report reads only that.
 Re-running the command is the resume path. There is no `--resume` flag and no `status` field to fall out of sync.
 
 **1. Scan and normalize.** Run the scanners, then `bin/normalize.cjs`. Read
@@ -79,14 +95,16 @@ skipped state. A path-policy rejection is a policy call, not a security claim, a
 says so under its own heading.
 
 **3. Triage.** One agent per finding, ordered by `priority()` from `bin/gate.cjs`. Build the
-prompt per `references/TRIAGE.md`, switching on `flow.kind`. Budget bounds the run; unspent work
-becomes `deferred` and is persisted, never dropped.
+prompt per `references/TRIAGE.md`, switching on `flow.kind`. Budget bounds the run. Findings past
+the budget stay untriaged on disk and the next run picks them up. A triage call that returns no
+usable answer is not a verdict: the finding stays at triage, the run ends `incomplete` and names
+it, and the next run asks again.
 
 **4. Gate.** `gate(triage, policy)` from `bin/gate.cjs`. Pure, total, no LLM. It takes a Triage
 and a Policy and nothing else, so a scanner's severity cannot reach the fix decision.
 
-**5. Fix and verify.** `references/FIX-AND-VERIFY.md` owns this. Partition into
-conflict-free waves, one worktree and branch per finding, at most two attempts, seven
+**5. Fix and verify.** `references/FIX-AND-VERIFY.md` owns this. One finding at a time in
+`order()`, one worktree and branch per finding off base, at most two attempts, seven
 obligations.
 
 **6. Report.** `references/REPORT.md`. `REMEDIATION.md` and `HANDOFF.md`, derived from the
@@ -97,15 +115,17 @@ End in exactly one of two states. Every finding has a terminal disposition, or `
 
 ## The seven obligations
 
-A fix is verified only when all seven pass. `evaluateVerification` in `bin/stage.cjs` is the
-sole definition. It indexes the seven obligation keys and nothing else, so `original_absent`
+A fix is verified only when every obligation its verify level requires passes: all seven at
+`full`, four at `cheap`, none at `none`. The report names the level beside every verified fix.
+`evaluateVerification` in `bin/stage.cjs` is the sole definition. It indexes the seven obligation keys and nothing else, so `original_absent`
 is structurally unreachable from the verdict rather than merely forbidden in prose.
 
 1. **Frozen target.** The contract is written before the patch exists and never changes.
 2. **Deterministic guard.** `bin/patch-guard.cjs` over the diff.
 3. **Differential witness.** Signals before the patch, silent after. Strongest available tier.
    `executable` is the designed default and is not implemented; today that means the opt-in
-   `dynamic` tier or a degraded `argued`. See `references/FIX-AND-VERIFY.md`.
+   `dynamic` tier or a degraded `argued`. At `argued`, 3 and 4 are recorded unavailable and
+   excused, and the fix is `fixed_unwitnessed`. See `references/FIX-AND-VERIFY.md`.
 4. **Functional control.** A legitimate request or covering test that passes on both trees.
 5. **Regression suite.** The project's own tests.
 6. **No new findings.** Rescan delta against base.
@@ -118,17 +138,23 @@ they mean the code does what it did, minus the vulnerability.
 ## Rules that are not negotiable
 
 **The fixer is never shown the rule.** No rule id, no scanner name, no scanner message, no
-observation, and no scanner tool access. You cannot game a matcher you were never shown. The
-schema closes the way around it too. A contract `invariant` fails validation when it names a
-scanner, borrows scanner-artifact vocabulary, or carries the syntactic form of a Semgrep or
-CodeQL rule id. Form rather than a name list, because no list closes on ids this skill has
-never seen.
+observation, and no scanner tool access. You cannot game a matcher you were never shown.
+`assertNoLeak` in `bin/leak-guard.cjs` enforces it on every fixer and auditor prompt. The whole
+prompt must not contain this finding's own rule id, fingerprint or message. The contract prose the
+triage agent wrote must also not name a scanner or a rule, or carry the syntactic form of a CodeQL
+rule id. Repository source is exempt from those last two checks, because a workflow that runs
+`github/codeql-action` or a line like `uses: actions/setup-node@v4` names nothing about the rule
+that fired. The schema closes the way around it too. A contract `invariant` fails validation when
+it names a scanner, borrows scanner-artifact vocabulary, or carries the form of a Semgrep or
+CodeQL rule id. Form rather than a name list, because no list closes on ids this skill has never
+seen.
 
 **The scanner going quiet is recorded and never read.** `rescan.original_absent` appears in the
 report and in no state transition. SAST rules match shapes and genuinely fixed code often keeps
 the shape, so a correct fix can still trip the rule. Gate on it and a correct fix gets rejected,
 the agent retries, and the cheapest passing edit on attempt two is the pattern-defeat the whole
-design exists to prevent. Only `rescan_new`, meaning findings the patch introduced, is a failure.
+design exists to prevent. Only `rescan_new` is a failure, meaning a rule firing in a file where
+base never saw it fire.
 
 **Severity requires demonstrated impact.** Only `exploitable` carries a severity. The other
 verdicts have no severity field at all. Overall severity never exceeds demonstrated impact.
@@ -137,11 +163,10 @@ verdicts have no severity field at all. Overall severity never exceeds demonstra
 attack, the absence of a second one is a hardening note. It is a named refutation reason so it
 stays countable.
 
-**Malformed agent output is discarded, never repaired.** Re-run once with a fresh agent, then
-defer.
+**Malformed agent output is discarded, never repaired.** Re-run once with a fresh agent, then leave the finding open for the next run.
 
-**No patching without verification.** If no test command is discoverable, degrade to triage-only
-unless the user passes `--allow-unverified-fixes`.
+**A missing test suite does not stop patching.** With no test command, `regression_suite` is
+recorded `unavailable` and the report says it was excused, not passed.
 
 ## Reference files
 
@@ -153,17 +178,22 @@ prompt. `references/FIX-AND-VERIFY.md` holds the fixer and auditor contracts, th
 discipline and the branch protocol. `references/REPORT.md` shapes the artifacts.
 
 `references/DYNAMIC-WITNESS.md` covers driving a running application. That tier is built and
-proven but is **not enabled by default**. It is a planned improvement, tracked in
+proven but is **not enabled by default**. It is opt-in, tracked in
 `design/FUTURE-IMPROVEMENTS.md`. Load it only when the operator passes `--witness=dynamic`.
 
 ## Tools
 
 All zero-dependency Node. Nothing is installed into the target.
 
+`bin/scan.cjs` runs the scanners, CodeQL once per detected language, and decides which rescan
+results a patch introduced. `bin/leak-guard.cjs` holds `assertNoLeak`, the check that keeps
+scanner material out of fixer and auditor prompts.
 `bin/normalize.cjs` turns scanner output into findings. `bin/validate.cjs` gates every write
 against a schema. `bin/gate.cjs` holds the threshold and the ordering. `bin/patch-guard.cjs`
 screens a diff. `bin/stage.cjs` holds `stageOf` and `evaluateVerification`, the only definitions of where a
-record is and whether a fix is verified. `bin/witness-run.cjs` runs the differential witness
+record is and whether a fix is verified. `bin/resume.cjs` picks the run directory, merges the
+records already on disk, and clears the leftovers of an attempt that a crashed run never
+recorded. `bin/witness-run.cjs` runs the differential witness
 and the control.
 `bin/app-harness.cjs` discovers, boots and tears down the target application, and is used only
 by the opt-in dynamic tier.

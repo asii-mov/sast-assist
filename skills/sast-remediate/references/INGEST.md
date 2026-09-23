@@ -10,20 +10,28 @@ Semgrep writes two formats in one run. One primary flag plus `--<fmt>-output=` f
 Passing `--json` and `--sarif` together is an error.
 
 ```sh
-semgrep scan --config p/default \
+semgrep scan --config <each --semgrep-config value, default p/default> \
   --json-output=<out>/scans/semgrep.json \
   --sarif-output=<out>/scans/semgrep.sarif <target>
 ```
 
-CodeQL needs a database first, then an analyze pass. Use `--sarif-add-snippets` so results carry
-their source text.
+CodeQL needs a database per language, then an analyze pass per database. `detectLanguages` in
+`bin/scan.cjs` picks the languages from the source files it finds (a bounded walk that skips
+`node_modules`, `vendor`, build output and dot directories), plus `actions` when
+`.github/workflows` holds a workflow. A root marker such as `package.json` alone does not count,
+because `codeql database create` fails on a language with no code. Each language's SARIF is
+merged into one `codeql.sarif` with one run per language. A language that fails is recorded and
+the others still count. The rescan of a patch reuses the baseline's languages. Use
+`--sarif-add-snippets` so results carry their source text.
 
 ```sh
-codeql database create <out>/codeql-db --language=<lang> --source-root=<target> --overwrite
-codeql database analyze <out>/codeql-db \
-  --format=sarif-latest --output=<out>/scans/codeql.sarif --sarif-add-snippets \
-  'codeql/<lang>-queries:codeql-suites/<lang>-security-extended.qls'
+codeql database create <out>/scans/codeql-db-<lang> --language=<lang> --source-root=<target> --overwrite
+codeql database analyze <out>/scans/codeql-db-<lang> \
+  --format=sarif-latest --output=<out>/scans/codeql-<lang>.sarif --sarif-add-snippets \
+  'codeql/<lang>-queries:codeql-suites/<lang>-<--codeql-suite, default security-extended>.qls'
 ```
+
+The rescan in `bin/scan.cjs` runs these same commands with the run's recorded configuration.
 
 `normalize.cjs` reads Semgrep's JSON, not its SARIF, because the JSON carries
 `extra.metadata.likelihood`, `.impact` and `.confidence`, which the SARIF flattens away.

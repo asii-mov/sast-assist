@@ -1,8 +1,9 @@
 # Dynamic witness
 
-**Status: built and proven, not enabled by default.** No tier-selection function exists yet, so
-nothing chooses this tier automatically. The operator opts in with `--witness=dynamic`. It is tracked as a planned
-improvement in `design/FUTURE-IMPROVEMENTS.md`, which lists what to settle before turning it on.
+**Status: wired and opt-in via `--witness=dynamic`.** No tier-selection function exists yet, so
+nothing chooses this tier automatically; `run.cjs` offers it to triage only when a harness was
+discovered in the target, otherwise triage is offered `argued` only. It is tracked in
+`design/FUTURE-IMPROVEMENTS.md`, which lists what to settle before turning it on by default.
 
 Drive the running application over its real network interface. This is the only tier that tests
 the boundary an attacker actually reaches.
@@ -101,8 +102,6 @@ Header values are redacted by name against an allowlist before a transcript is r
 
 ## Cost containment
 
-App boot is the most expensive operation in a run. It amortizes across a conflict-free wave. Boot
-once per tree per wave, base and head, run every dynamic witness in that wave against those two
-instances, and reset fixture state between exchanges.
-
-This gives waves a second justification beyond collision safety.
+App boot is the most expensive operation in a run. Today, base and patched trees are each booted
+fresh for every attempt and torn down right after by `witnessObligations` in `bin/witness-run.cjs`;
+sharing one base instance across a run is not done yet. Reset fixture state between exchanges.

@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 'use strict';
 // REMEDIATION.md and HANDOFF.md, built only from finding records and the run's meta.
-// evaluateVerification in bin/stage.cjs is the sole definition of "verified"; this module
-// calls it and never re-derives it. The seven-obligation model is easy to describe correctly
+// Each finding's saved disposition is its outcome; this module files it under that and never
+// re-judges a patch. The seven-obligation model is easy to describe correctly
 // and easy to summarize dishonestly, so every helper here exists to keep those the same
 // sentence: a fix checked at a partial verify level is never described as fully verified, a
 // path-policy rejection is a scope decision and not a security claim, rescan quiet is an
 // observation and never a verdict, and only an exploitable finding ever carries a severity.
 
-const { evaluateVerification, VERIFY_LEVELS, OBLIGATIONS } = require('./stage.cjs');
+const { VERIFY_LEVELS, OBLIGATIONS } = require('./stage.cjs');
 const { claimedRank } = require('./gate.cjs');
 
 // ---------------------------------------------------------------------- markdown primitives
@@ -61,41 +61,47 @@ function boundaryFor(f) {
   return code(`${s.locus.file}:${s.locus.line_at_scan}`);
 }
 
-// ---------------------------------------------------------------------- verification reading
+// ---------------------------------------------------------------------- disposition reading
 
+// bin/run.cjs judges each finding once, with the run's verify level. A finding it has not
+// judged yet is `pending`.
+function byState(findings) {
+  const groups = new Map();
+  for (const f of findings) {
+    const state = f.disposition ? f.disposition.state : 'pending';
+    if (!groups.has(state)) groups.set(state, []);
+    groups.get(state).push(f);
+  }
+  return (...states) => states.flatMap((s) => groups.get(s) || []);
+}
+
+const lastPatch = (f) => f.patches[f.patches.length - 1];
 const requiredFor = (meta) => VERIFY_LEVELS[meta.verify_level] || [];
 const obligationList = (names) => (names.length ? names.map(code).join(', ') : 'none');
+const branchCell = (d) => (d.branch ? code(d.branch) : 'none');
 
 // The one sentence this whole file protects. "Verified" alone is exactly the phrase that
 // erases the difference between cheap and full, so it never appears without the level and the
-// skipped obligations named beside it. `unavailable` is named too: only regression_suite may
-// land there (bin/stage.cjs MAY_BE_UNAVAILABLE), and an excused obligation is not a passed one.
-function verificationSummary(ev, level) {
+// skipped obligations named beside it. `unavailable` is named too: only the obligations in
+// bin/stage.cjs MAY_BE_UNAVAILABLE may land there, and an excused obligation is not a passed one.
+function verificationSummary(d) {
   const parts = [];
-  if (ev.skipped.length === 0) {
-    parts.push(`verified at ${code('full')}: all seven obligations passed`);
+  if (d.skipped_obligations.length === 0) {
+    parts.push(`verified at ${code('full')}: all seven obligations ${d.unavailable.length ? 'checked' : 'passed'}`);
   } else {
-    const ran = OBLIGATIONS.filter((o) => !ev.skipped.includes(o));
-    parts.push(`verified at ${code(level)} (${ran.length} of 7 obligations checked: `
-      + `${obligationList(ran)}; skipped: ${obligationList(ev.skipped)})`);
+    const ran = OBLIGATIONS.filter((o) => !d.skipped_obligations.includes(o));
+    parts.push(`verified at ${code(d.verify_level)} (${ran.length} of 7 obligations checked: `
+      + `${obligationList(ran)}; skipped: ${obligationList(d.skipped_obligations)})`);
   }
-  if (ev.unavailable.length) {
-    parts.push(`${obligationList(ev.unavailable)} unavailable and excused, not passed`);
+  if (d.unavailable.length) {
+    parts.push(`${obligationList(d.unavailable)} unavailable and excused, not passed`);
   }
   return parts.join('; ');
 }
 
-function witnessCell(f, last, ev) {
-  if (ev.skipped.includes('differential_witness')) return 'skipped at this verify level';
-  const tier = contractOf(f).witness.tier;
-  const raw = last.verification.differential_witness || {};
-  return `${code(tier)}: ${raw.status || 'unknown'}`;
-}
-
-function auditCell(last, ev) {
-  if (ev.skipped.includes('hostile_auditor')) return 'skipped at this verify level';
-  const raw = last.verification.hostile_auditor || {};
-  return raw.verdict ? code(raw.verdict) : (raw.status || 'unknown');
+function obligationCell(f, name, read) {
+  if (f.disposition.skipped_obligations.includes(name)) return 'skipped at this verify level';
+  return read(lastPatch(f).verification[name] || {});
 }
 
 function failureDetail(rawVerification, name) {
@@ -108,78 +114,16 @@ function failureDetail(rawVerification, name) {
   return `status ${o.status}`;
 }
 
-function attemptSummary(patch, i, required) {
-  if (patch.fix && patch.fix.outcome === 'cannot_fix') {
-    return `attempt ${i + 1}: fixer declined (${patch.fix.reason})`;
-  }
-  if (!patch.verification) return `attempt ${i + 1}: no verification recorded`;
-  const ev = evaluateVerification(patch.verification, required);
-  return ev.verified
-    ? `attempt ${i + 1}: verified, superseded by a later attempt`
-    : `attempt ${i + 1}: failed on ${obligationList(ev.failed)}`;
+function whyNotFixed(d) {
+  if (d.state === 'fix_declined') return `the fixer declined: ${d.reason}`;
+  if (d.outcome !== 'patched') return `${code(d.outcome)}: ${d.detail || 'no detail recorded'}`;
+  return `failed on ${obligationList([...d.failed, ...d.missing])}`;
 }
 
-// ---------------------------------------------------------------------- classification
-
-// One patched finding, three possible fates. `fixed_unwitnessed` exists because the `argued`
-// witness tier can never mechanically pass (FIX-AND-VERIFY.md): when differential_witness is
-// the ONLY failure and the contract's own tier is `argued`, that is the designed degraded
-// path, not a broken fix, and it must never be folded into either "verified" or "unfixable".
-function classifyPatch(f, required) {
-  const patches = f.patches || [];
-  if (!patches.length) return { kind: 'pending' };
-  const last = patches[patches.length - 1];
-  if (last.fix && last.fix.outcome === 'cannot_fix') {
-    return patches.length >= 2 ? { kind: 'unfixable', last, ev: null } : { kind: 'pending', last };
-  }
-  if (!last.verification) return { kind: 'pending', last };
-  const ev = evaluateVerification(last.verification, required);
-  if (ev.verified) return { kind: 'fixed', last, ev };
-  const tier = contractOf(f).witness.tier;
-  const onlyWitnessFailed = ev.failed.length === 1 && ev.failed[0] === 'differential_witness'
-    && ev.missing.length === 0;
-  if (tier === 'argued' && onlyWitnessFailed) return { kind: 'fixed_unwitnessed', last, ev };
-  return patches.length >= 2 ? { kind: 'unfixable', last, ev } : { kind: 'pending', last, ev };
-}
-
-// A single pass so REMEDIATION.md and HANDOFF.md can never disagree about which bucket a
-// finding is in. `disposition.outcome === 'split_escalated'` is the one case a Triage cannot
-// represent (TRIAGE.md: a second split escalates to a human, and no code tracks that count
-// yet), so it is checked before triage is even read.
-function classify(findings, meta) {
-  const required = requiredFor(meta);
-  const b = {
-    deferred: [], splitEscalated: [], pending: [],
-    fixed: [], fixedUnwitnessed: [], unfixable: [],
-    rejected: new Map(), policyRejected: [], belowThreshold: [], undecidable: [],
-  };
-  for (const f of findings) {
-    if (f.disposition && f.disposition.outcome === 'split_escalated') { b.splitEscalated.push(f); continue; }
-    if (!f.triage) { b.deferred.push(f); continue; }
-    if (!f.gate) { b.pending.push(f); continue; }
-    switch (f.gate.reason) {
-      case 'undecidable': b.undecidable.push(f); break;
-      case 'not_exploitable':
-        if (f.triage.established_by === 'deterministic_prepass') {
-          b.policyRejected.push(f);
-        } else {
-          const list = b.rejected.get(f.triage.refutation.reason) || [];
-          list.push(f);
-          b.rejected.set(f.triage.refutation.reason, list);
-        }
-        break;
-      case 'below_threshold': b.belowThreshold.push(f); break;
-      case 'at_or_above_threshold': {
-        const c = classifyPatch(f, required);
-        if (c.kind === 'pending') b.pending.push(f);
-        else b[c.kind === 'fixed' ? 'fixed' : c.kind === 'fixed_unwitnessed' ? 'fixedUnwitnessed' : 'unfixable']
-          .push({ f, last: c.last, ev: c.ev });
-        break;
-      }
-      default: b.pending.push(f);
-    }
-  }
-  return b;
+function attemptSummary(p) {
+  if (p.outcome !== 'patched') return `attempt ${p.attempt}: ${p.outcome}`;
+  const failed = (p.typed_failures || []).map((x) => x.obligation);
+  return `attempt ${p.attempt}: ${failed.length ? `failed on ${obligationList(failed)}` : 'passed its checks'}`;
 }
 
 // ---------------------------------------------------------------------- scanner disagreement
@@ -237,10 +181,16 @@ function describeScanners(scanners) {
 // ---------------------------------------------------------------------- REMEDIATION.md
 
 function renderRemediation(findings, meta) {
-  const required = requiredFor(meta);
-  const b = classify(findings, meta);
+  const of = byState(findings);
+  const fixed = of('fixed');
+  const unwitnessed = of('fixed_unwitnessed');
+  const shipped = of('fixed', 'fixed_unwitnessed');
+  const pending = of('pending');
+  const rejected = new Map();
+  for (const f of of('rejected').filter((x) => !x.disposition.policy)) {
+    rejected.set(f.disposition.reason, [...(rejected.get(f.disposition.reason) || []), f]);
+  }
   const triagedCount = findings.filter((f) => f.triage).length;
-  const shipped = [...b.fixed, ...b.fixedUnwitnessed];
   const L = [];
 
   L.push(`# Remediation report: ${code(meta.target)}`, '');
@@ -250,10 +200,18 @@ function renderRemediation(findings, meta) {
   L.push(`- Base commit: ${code(meta.base_commit)}`);
   L.push(`- Fix threshold: ${code((meta.policy && meta.policy.fix_at) || 'unspecified')} and above`);
   L.push(`- Verify level: ${code(meta.verify_level || 'unspecified')} `
-    + `(obligations checked: ${obligationList(required)})`);
+    + `(obligations checked: ${obligationList(requiredFor(meta))})`);
   L.push(`- Scanners: ${describeScanners(meta.scanners)}`);
+  if (meta.scan_config) {
+    L.push(`- Rescan configuration: semgrep ${code(meta.scan_config.semgrep.join(' '))}, `
+      + `CodeQL suite ${code(meta.scan_config.codeql_suite)}`);
+    if ((meta.scanners || []).some((s) => s.status === 'reused')) {
+      L.push('- Reused scans were made outside this run. Rescans ran the configuration above, so '
+        + 'a rule it runs that the reused scan did not is counted as introduced by the patch.');
+    }
+  }
   L.push(`- Findings processed: ${triagedCount} of ${findings.length} `
-    + `(${findings.length - triagedCount} deferred)`);
+    + `(${findings.length - triagedCount} not triaged yet)`);
   if (meta.dropped && meta.dropped.length) {
     L.push(`- Raw scanner results dropped before analysis: ${meta.dropped.length} `
       + '(path missing or outside the repository root)');
@@ -266,66 +224,82 @@ function renderRemediation(findings, meta) {
   }
   if (meta.run_status === 'incomplete') {
     L.push(`**This run is incomplete.** Reason: ${meta.incomplete_reason || 'not stated'}.`);
-  } else if (b.pending.length) {
-    L.push(`**This run is not fully resolved.** ${noun(b.pending.length, 'finding')} `
-      + `${b.pending.length === 1 ? 'is' : 'are'} still mid-fix with no incomplete reason recorded.`);
+  } else if (pending.length) {
+    L.push(`**This run is not fully resolved.** ${noun(pending.length, 'finding')} `
+      + `${pending.length === 1 ? 'has' : 'have'} no outcome and no incomplete reason recorded.`);
   } else {
     L.push('This run completed. Every finding below has a terminal outcome.');
   }
 
   L.push('', '**2. What changed.**', '');
-  if (b.fixed.length) {
-    L.push(`Branch ${code(`sast-fix/integration-${meta.run_id}`)} carries ${noun(b.fixed.length, 'commit')}, `
-      + `one per verified finding, cherry-picked in id order off ${code(meta.base_commit)}.`);
-    L.push('The one action left is to review and merge it.');
+  if (fixed.length || unwitnessed.length) {
+    L.push(`Each patched finding has its own branch off ${code(meta.base_commit)}. `
+      + 'The one action left is to review and merge them.', '');
+    for (const f of fixed) L.push(`- ${code(f.id)}: ${code(f.disposition.branch)}`);
+    for (const f of unwitnessed) {
+      L.push(`- ${code(f.id)}: ${code(f.disposition.branch)} (not mechanically witnessed, see section 4)`);
+    }
   } else {
-    L.push('No finding reached a verified fix this run, so no integration branch was built. '
-      + 'Nothing is waiting on review.');
-  }
-  if (b.fixedUnwitnessed.length) {
-    L.push(`${noun(b.fixedUnwitnessed.length, 'finding')} patched but not mechanically witnessed `
-      + 'sit outside that branch; see the handoff document.');
+    L.push('No finding was patched this run. Nothing is waiting on review.');
   }
 
   L.push('', '**3. Fixed findings.**', '');
-  if (!b.fixed.length) {
+  if (!fixed.length) {
     L.push('No findings were fixed and verified this run.');
   } else {
-    const rows = b.fixed.map(({ f, last, ev }) => [
+    const rows = fixed.map((f) => [
       code(f.id), code(f.triage.severity), titleFor(f), boundaryFor(f),
-      witnessCell(f, last, ev), auditCell(last, ev),
+      obligationCell(f, 'differential_witness', (o) => `${code(f.disposition.witness_tier)}: ${o.status || 'unknown'}`),
+      obligationCell(f, 'hostile_auditor', () => code(lastPatch(f).audit.verdict)),
     ]);
     L.push(table(['id', 'severity', 'title', 'boundary', 'witness', 'audit'], rows), '');
-    for (const { f, ev } of b.fixed) L.push(`- ${code(f.id)}: ${verificationSummary(ev, meta.verify_level)}.`);
+    for (const f of fixed) L.push(`- ${code(f.id)}: ${verificationSummary(f.disposition)}.`);
   }
 
-  L.push('', '**4. Evidence strength.**', '');
+  L.push('', '**4. Patched but unwitnessed.**', '');
+  if (!unwitnessed.length) {
+    L.push(`No patch landed on the ${code('argued')} witness tier this run.`);
+  } else {
+    L.push(`These patches passed the checks this run asked for, but the ${code('argued')} tier has no `
+      + 'mechanical witness, so no check showed the attack stop. Review each one by hand.', '');
+    const rows = unwitnessed.map((f) => [code(f.id), code(f.triage.severity), titleFor(f), branchCell(f.disposition)]);
+    L.push(table(['id', 'severity', 'title', 'branch'], rows), '');
+    for (const f of unwitnessed) L.push(`- ${code(f.id)}: ${verificationSummary(f.disposition)}.`);
+  }
+
+  L.push('', '**5. Not fixed.**', '');
+  const notFixed = of('fix_declined', 'fix_failed');
+  if (!notFixed.length) {
+    L.push('No fix was declined or failed this run.');
+  } else {
+    const rows = notFixed.map((f) => [code(f.id), code(f.disposition.state),
+      branchCell(f.disposition), whyNotFixed(f.disposition)]);
+    L.push(table(['id', 'outcome', 'branch', 'why'], rows), 'The handoff document has the detail for each.');
+  }
+
+  L.push('', '**6. Evidence strength.**', '');
   if (!shipped.length) {
     L.push('No findings were patched this run, so there is no evidence mix to report.');
   } else {
     const counts = new Map();
-    for (const { f } of shipped) {
-      const tier = contractOf(f).witness.tier;
-      counts.set(tier, (counts.get(tier) || 0) + 1);
-    }
+    for (const f of shipped) counts.set(f.disposition.witness_tier, (counts.get(f.disposition.witness_tier) || 0) + 1);
     const rows = [...counts.entries()].sort((x, y) => y[1] - x[1]).map(([tier, n]) => [code(tier), n]);
     L.push(table(['witness tier', 'count'], rows));
-    const argued = counts.get('argued') || 0;
-    if (argued / shipped.length > 0.5) {
+    if ((counts.get('argued') || 0) / shipped.length > 0.5) {
       L.push('', `Most patched findings fell back to the ${code('argued')} tier, meaning no mechanical `
         + 'check ran. That says something real about this repository, not about the fixes: treat '
         + 'these as human-reviewed, not machine-proven.');
     }
   }
 
-  L.push('', '**5. Rejected findings.**', '');
-  if (!b.rejected.size) {
+  L.push('', '**7. Rejected findings.**', '');
+  if (!rejected.size) {
     L.push('No findings were rejected as not exploitable this run.');
   } else {
-    const rows = [...b.rejected.entries()].sort((x, y) => y[1].length - x[1].length)
+    const rows = [...rejected.entries()].sort((x, y) => y[1].length - x[1].length)
       .map(([reason, list]) => [code(reason), list.length, list.map((f) => code(f.id)).join(', ')]);
     L.push(table(['reason', 'count', 'ids'], rows));
-    const dig = b.rejected.get('defense_in_depth_gap_only');
+    const dig = rejected.get('defense_in_depth_gap_only');
     if (dig && dig.length) {
       L.push('', `${noun(dig.length, 'finding')} were rejected as ${code('defense_in_depth_gap_only')}: `
         + 'a control already on the path prevents the attack, so the missing second layer is a '
@@ -333,27 +307,29 @@ function renderRemediation(findings, meta) {
     }
   }
 
-  L.push('', '**6. Policy rejections.**', '');
+  L.push('', '**8. Policy rejections.**', '');
   L.push('These findings were never sent to an agent. Path policy resolved them by matching test, '
     + 'vendor, generated, minified or migration code. This is a scope decision, not a claim that '
     + `the code is safe; ${code('--include-tests')} disables it.`, '');
-  if (b.policyRejected.length) {
-    const rows = b.policyRejected.map((f) => [code(f.id), boundaryFor(f),
+  const policyRejected = of('rejected').filter((f) => f.disposition.policy);
+  if (policyRejected.length) {
+    const rows = policyRejected.map((f) => [code(f.id), boundaryFor(f),
       truncate(f.triage.refutation.explanation, 100)]);
     L.push(table(['id', 'matched', 'why'], rows));
   } else {
     L.push('No findings were rejected by path policy this run.');
   }
 
-  L.push('', '**7. Below threshold.**', '');
-  if (!b.belowThreshold.length) {
+  L.push('', '**9. Below threshold.**', '');
+  const below = of('below_threshold');
+  if (!below.length) {
     L.push('No exploitable findings fell below the fix threshold this run.');
   } else {
-    const rows = b.belowThreshold.map((f) => [code(f.id), code(f.triage.severity), titleFor(f), boundaryFor(f)]);
+    const rows = below.map((f) => [code(f.id), code(f.triage.severity), titleFor(f), boundaryFor(f)]);
     L.push(table(['id', 'severity', 'title', 'boundary'], rows));
   }
 
-  L.push('', '**8. Scanner disagreement.**', '');
+  L.push('', '**10. Scanner disagreement.**', '');
   const disagreements = scannerDisagreements(findings);
   if (!disagreements.length) {
     L.push('No scanner disagreement to report: every multi-scanner site agreed closely enough, '
@@ -365,15 +341,15 @@ function renderRemediation(findings, meta) {
     L.push(table(['id', 'site', 'detail'], rows));
   }
 
-  L.push('', '**9. Scanner-quiet status.**', '');
+  L.push('', '**11. Scanner-quiet status.**', '');
   if (!shipped.length) {
     L.push('No findings were patched this run, so there is no rescan status to report.');
   } else {
-    const rows = shipped.map(({ f, last, ev }) => {
-      if (ev.skipped.includes('no_new_findings')) return [code(f.id), 'rescan skipped at this verify level'];
-      const rescan = (last.verification.no_new_findings || {}).rescan || {};
-      const status = rescan.original_absent
-        ? 'scanner is quiet on the original rule' : 'scanner still fires on the original rule';
+    const rows = shipped.map((f) => {
+      if (f.disposition.skipped_obligations.includes('no_new_findings')) return [code(f.id), 'rescan skipped at this verify level'];
+      const absent = (lastPatch(f).verification.rescan || {}).original_absent;
+      const status = absent === null ? 'the rescan produced no output'
+        : absent ? 'scanner is quiet on the original rule' : 'scanner still fires on the original rule';
       return [code(f.id), `${status} (observation only; the outcome above does not depend on this)`];
     });
     L.push(table(['id', 'original rule status'], rows));
@@ -385,8 +361,8 @@ function renderRemediation(findings, meta) {
 // ---------------------------------------------------------------------- HANDOFF.md
 
 function renderHandoff(findings, meta) {
-  const required = requiredFor(meta);
-  const b = classify(findings, meta);
+  const of = byState(findings);
+  const auditRequired = requiredFor(meta).includes('hostile_auditor');
   const L = [];
 
   L.push(`# Handoff: ${code(meta.target)}`, '');
@@ -396,65 +372,53 @@ function renderHandoff(findings, meta) {
     L.push('', `**This run is incomplete.** Reason: ${meta.incomplete_reason || 'not stated'}.`);
   }
 
-  L.push('', '**Unfixable.**', '');
-  if (!b.unfixable.length) {
-    L.push('No finding exhausted its fix attempts this run.');
+  L.push('', '**Not fixed.**', '');
+  const notFixed = of('fix_declined', 'fix_failed');
+  if (!notFixed.length) {
+    L.push('No fix was declined or failed this run.');
   } else {
-    for (const { f, last, ev } of b.unfixable) {
-      const patches = f.patches || [];
-      const branch = last.branch || `sast-fix/${f.id}/${patches.length}`;
-      L.push(`- ${code(f.id)} (${code(f.triage.severity)}): branch ${code(branch)}, `
-        + `${noun(patches.length, 'attempt')} made. ${titleFor(f)}`);
-      if (last.fix && last.fix.outcome === 'cannot_fix') {
-        L.push(`  The fixer declined on the final attempt: ${last.fix.reason}`);
-      } else {
-        const witnessPath = last.fix && last.fix.witness_path;
-        L.push(`  Red witness: ${witnessPath ? code(witnessPath) : 'none recorded'}.`);
-        const auditText = ev.skipped.includes('hostile_auditor')
-          ? 'not run at this verify level'
-          : ((last.verification.hostile_auditor || {}).verdict || 'not recorded');
-        L.push(`  Last audit verdict: ${code(auditText)}.`);
-        L.push(`  Failed obligations: ${ev.failed.length
-          ? ev.failed.map((n) => `${code(n)} (${failureDetail(last.verification, n)})`).join('; ')
+    for (const f of notFixed) {
+      const d = f.disposition;
+      const last = lastPatch(f);
+      L.push(`- ${code(f.id)} (${code(f.triage.severity)}): branch ${branchCell(d)}, `
+        + `${noun(f.patches.length, 'attempt')} made. ${titleFor(f)}`);
+      L.push(`  Why: ${whyNotFixed(d)}.`);
+      if (d.state === 'fix_failed' && d.outcome === 'patched') {
+        const audit = !auditRequired ? 'not run at this verify level'
+          : (last.audit ? last.audit.verdict : 'not recorded');
+        L.push(`  Last audit verdict: ${code(audit)}.`);
+        L.push(`  Failed obligations: ${d.failed.length
+          ? d.failed.map((n) => `${code(n)} (${failureDetail(last.verification, n)})`).join('; ')
           : 'none recorded'}.`);
       }
-      if (patches.length > 1) {
-        L.push(`  Earlier attempts: ${patches.slice(0, -1)
-          .map((p, i) => attemptSummary(p, i, required)).join('; ')}.`);
+      if (f.patches.length > 1) {
+        L.push(`  Earlier attempts: ${f.patches.slice(0, -1).map(attemptSummary).join('; ')}.`);
       }
     }
   }
 
   L.push('', '**Undecidable.**', '');
-  if (!b.undecidable.length) {
+  const undecidable = of('undecidable');
+  if (!undecidable.length) {
     L.push('No finding is undecidable this run.');
   } else {
-    for (const f of b.undecidable) {
+    for (const f of undecidable) {
       L.push(`- ${code(f.id)}: ${f.triage.blocker.missing_fact}`);
       L.push(`  Resolve by ${code(f.triage.blocker.resolve_by)}: ${f.triage.blocker.plan}`);
       L.push('  This is a hypothesis, not a confirmed vulnerability, and carries no severity.');
     }
   }
 
-  L.push('', '**Fixed but unwitnessed.**', '');
-  if (!b.fixedUnwitnessed.length) {
+  L.push('', '**Patched but unwitnessed.**', '');
+  const unwitnessed = of('fixed_unwitnessed');
+  if (!unwitnessed.length) {
     L.push('No finding landed on the argued tier this run.');
   } else {
-    for (const { f, last } of b.fixedUnwitnessed) {
+    for (const f of unwitnessed) {
       const w = contractOf(f).witness;
       L.push(`- ${code(f.id)} (${code(f.triage.severity)}): ${titleFor(f)}`);
       L.push(`  Obstacle: ${code(w.obstacle)}. ${w.why}`);
-      L.push(`  Branch: ${code(last.branch || `sast-fix/${f.id}/${(f.patches || []).length}`)}.`);
-    }
-  }
-
-  L.push('', '**Split escalations.**', '');
-  if (!b.splitEscalated.length) {
-    L.push('No finding split twice this run.');
-  } else {
-    for (const f of b.splitEscalated) {
-      const why = ((f.disposition && f.disposition.groups) || []).map((g) => g.why).join(' / ');
-      L.push(`- ${code(f.id)}: proposed a second split. ${why}`);
+      L.push(`  Branch: ${branchCell(f.disposition)}.`);
     }
   }
 

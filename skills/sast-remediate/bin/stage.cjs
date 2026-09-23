@@ -15,7 +15,10 @@
 // every stage re-derives itself from what is already on disk.
 const STAGES = ['triage', 'gate', 'fix', 'verify', 'report', 'done'];
 
-function stageOf(finding) {
+// `level` is the run's --verify level. A patch is judged against the obligations that level
+// requires, so a fix that passed every check the run asked for is not sent back for a second try.
+function stageOf(finding, level) {
+  if (!Object.hasOwn(VERIFY_LEVELS, level)) throw new Error(`unknown verify level: ${level}`);
   if (finding.disposition !== null && finding.disposition !== undefined) return 'done';
   if (!finding.triage) return 'triage';
   if (!finding.gate) return 'gate';
@@ -28,7 +31,8 @@ function stageOf(finding) {
       if (patches.length === 0) return 'fix';
       const last = patches[patches.length - 1];
       if (!last.verification) return 'verify';
-      if (evaluateVerification(last.verification).verified) return 'report';
+      const tier = finding.triage.contract?.witness?.tier ?? null;
+      if (evaluateVerification(last.verification, VERIFY_LEVELS[level], tier).verified) return 'report';
       // The cap is in the type: schema/finding.schema.json bounds patches at two.
       return patches.length >= 2 ? 'report' : 'fix';
     }
@@ -53,15 +57,24 @@ const OBLIGATIONS = [
   'hostile_auditor',
 ];
 
-// A red suite on base is not the patch's fault, so regression_suite alone may be unavailable
-// without sinking the verdict. Every other obligation must actually pass.
-const MAY_BE_UNAVAILABLE = new Set(['regression_suite']);
+// A red suite on base is not the patch's fault, and a rescan whose scanners produced nothing
+// says nothing about the patch, so these two may be unavailable without sinking the verdict.
+// Every other obligation must actually pass, except the argued-tier pair below.
+const MAY_BE_UNAVAILABLE = new Set(['regression_suite', 'no_new_findings']);
+
+// An argued witness sends no attack and has no control, so the pair is recorded unavailable
+// with the obstacle and excused, and the disposition is `fixed_unwitnessed` so a human still
+// reviews it.
+const EXCUSED_AT_ARGUED = new Set(['differential_witness', 'functional_control']);
+const excused = (name, tier) => MAY_BE_UNAVAILABLE.has(name) || (tier === 'argued' && EXCUSED_AT_ARGUED.has(name));
 
 // `required` narrows which obligations must hold. The orchestrator passes a smaller set when
 // the operator lowers --verify, because the witness pair needs a bootable target and the
 // auditor costs an agent call. An obligation outside `required` is not evaluated at all: it
 // cannot pass, fail or rescue anything, and it is reported as skipped so the report can say so.
-function evaluateVerification(verification, required = OBLIGATIONS) {
+// `tier` is the frozen contract's witness tier, used only to excuse the argued pair above; it
+// never comes from the verification record itself, so a patch cannot excuse itself.
+function evaluateVerification(verification, required = OBLIGATIONS, tier = null) {
   const req = new Set(required);
   const failed = [];
   const unavailable = [];
@@ -73,7 +86,7 @@ function evaluateVerification(verification, required = OBLIGATIONS) {
     const status = verification && verification[name] && verification[name].status;
     if (status === undefined) { missing.push(name); continue; }
     if (status === 'pass') continue;
-    if (status === 'unavailable' && MAY_BE_UNAVAILABLE.has(name)) { unavailable.push(name); continue; }
+    if (status === 'unavailable' && excused(name, tier)) { unavailable.push(name); continue; }
     failed.push(name);
   }
 
@@ -97,16 +110,19 @@ const VERIFY_LEVELS = {
 };
 
 module.exports = {
-  stageOf, evaluateVerification, STAGES, OBLIGATIONS, MAY_BE_UNAVAILABLE, VERIFY_LEVELS,
+  stageOf, evaluateVerification, STAGES, OBLIGATIONS, MAY_BE_UNAVAILABLE, VERIFY_LEVELS, excused,
 };
 
 if (require.main === module) {
   const fs = require('fs');
-  const [file] = process.argv.slice(2);
-  if (!file) { console.error('usage: stage.cjs <findings.json>'); process.exit(2); }
+  const [file, level] = process.argv.slice(2);
+  if (!file || !Object.hasOwn(VERIFY_LEVELS, level)) {
+    console.error(`usage: stage.cjs <findings.json> <${Object.keys(VERIFY_LEVELS).join('|')}>`);
+    process.exit(2);
+  }
   const counts = new Map(STAGES.map((s) => [s, 0]));
   for (const f of JSON.parse(fs.readFileSync(file, 'utf8'))) {
-    const s = stageOf(f);
+    const s = stageOf(f, level);
     counts.set(s, counts.get(s) + 1);
     console.log(`${s.padEnd(8)} ${f.id}`);
   }

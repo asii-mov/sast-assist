@@ -7,12 +7,13 @@
 //
 // This file is also where the skill's central rule is enforced mechanically rather than by
 // prose: buildFixPrompt assembles the fixer's prompt field by field from the security contract
-// and the flow, and assertNoLeak refuses to send a prompt that carries a rule id, a scanner
-// name, a scanner message or an observation. A finding record is never handed to a fixer whole.
+// and the flow, and bin/leak-guard.cjs refuses to send a prompt that carries this finding's rule
+// id or message, or contract prose that names a scanner or has the form of a rule id. A finding
+// record is never handed to a fixer whole.
 
 const fs = require('fs');
-const path = require('path');
 const os = require('os');
+const path = require('path');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 
@@ -20,42 +21,55 @@ const ROOT = path.resolve(__dirname, '..');
 const FINDING_SCHEMA = path.join(ROOT, 'schema/finding.schema.json');
 const AGENT_SCHEMA = path.join(ROOT, 'schema/agent-results.schema.json');
 
-const { stageOf, evaluateVerification, VERIFY_LEVELS } = require('./stage.cjs');
+const { stageOf, evaluateVerification, VERIFY_LEVELS, excused } = require('./stage.cjs');
 const { gate, order } = require('./gate.cjs');
 const { normalize, makeRepo } = require('./normalize.cjs');
+const { runScanners, onPath, trim, baselineOf, rescan, DEFAULT_SCAN_CONFIG, SUITE_NAME, semgrepConfigArg, SCANNERS } = require('./scan.cjs');
 const { validate } = require('./validate.cjs');
 const { guardDiff } = require('./patch-guard.cjs');
+const { defaultOutDir, readRecorded, mergeExisting, clearAttempt, incompleteReason } = require('./resume.cjs');
+const { assertNoLeak, leakError, recordTerms, authoredProse } = require('./leak-guard.cjs');
 
 // --out is operator-controlled and git rejects spaces, `~ ^ : ? * [ \\`, `..` and a leading dot.
 const refSafe = (s) => String(s).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/\.{2,}/g, '.')
   .replace(/^[-.]+|[.-]+$/g, '') || 'run';
 const sha256 = (s) => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
 
+// Worktrees live outside the output directory, whose findings/ and scans/ name the rule the fixer
+// is never shown. Derived from the output directory so a resumed run finds its base tree again.
+const cacheHome = () => process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
+const worktreeRootFor = (outDir) =>
+  path.join(cacheHome(), 'sast-remediate', 'worktrees', sha256(path.resolve(outDir)).slice(0, 16));
+
 // ------------------------------------------------------------------------ cli
 
 const USAGE = `usage: run.cjs --target=DIR [options]
   --target=DIR        repository to remediate (required)
-  --out=DIR           output dir (default ~/sast-remediate/<repo>/run-<N>)
+  --out=DIR           output dir (default: continue the latest unfinished run of this
+                      commit under ~/sast-remediate/<repo>/, else start run-<N+1>)
   --fix-at=LEVEL      informational|low|medium|high|critical  (default medium)
   --verify=LEVEL      none|cheap|full                          (default cheap)
+  --witness=dynamic   also offer the live-app witness (boots the app on loopback)
   --scanners=LIST     semgrep,codeql   (default both)
-  --scans=DIR         reuse existing scanner output, skip scanning
+  --scans=DIR         reuse existing scanner output; pass the rules it was made with
+  --semgrep-config=C  Semgrep --config for the scan and every rescan, repeatable or
+                      comma separated (default p/default)
+  --codeql-suite=S    CodeQL suite name for the scan and every rescan (default security-extended)
   --triage-only       stop after the gate, write no patches
   --max-findings=N    bound the run; the rest become deferred, never dropped
   --model=NAME        model for agent calls
-  --allow-unverified-fixes  patch even when no test command is discoverable
   --dry-run           print the plan and exit`;
 
 class UsageError extends Error {}
 
 const SEVERITIES = ['informational', 'low', 'medium', 'high', 'critical'];
-const SCANNERS = ['semgrep', 'codeql'];
 
 function parseArgs(argv) {
   const opts = {
-    target: null, out: null, fixAt: 'medium', verify: 'cheap',
+    target: null, out: null, fixAt: 'medium', verify: 'cheap', witness: null,
     scanners: [...SCANNERS], scans: null, triageOnly: false, maxFindings: Infinity,
-    model: null, allowUnverifiedFixes: false, dryRun: false, timeoutMs: 300000,
+    model: null, dryRun: false, timeoutMs: 300000,
+    scanConfig: { semgrep: [], codeql_suite: DEFAULT_SCAN_CONFIG.codeql_suite },
   };
   for (const a of argv) {
     const i = a.indexOf('=');
@@ -66,12 +80,19 @@ function parseArgs(argv) {
       case 'out': opts.out = String(val); break;
       case 'fix-at': opts.fixAt = String(val); break;
       case 'verify': opts.verify = String(val); break;
+      case 'witness': opts.witness = String(val); break;
       case 'scanners': opts.scanners = String(val).split(',').map((s) => s.trim()).filter(Boolean); break;
       case 'scans': opts.scans = String(val); break;
+      case 'semgrep-config': {
+        const items = val === true ? [] : String(val).split(',').map((s) => s.trim()).filter(Boolean);
+        if (!items.length) throw new UsageError('--semgrep-config needs a value');
+        opts.scanConfig.semgrep.push(...items.map(semgrepConfigArg));
+        break;
+      }
+      case 'codeql-suite': opts.scanConfig.codeql_suite = String(val); break;
       case 'triage-only': opts.triageOnly = true; break;
       case 'max-findings': opts.maxFindings = Number(val); break;
       case 'model': opts.model = String(val); break;
-      case 'allow-unverified-fixes': opts.allowUnverifiedFixes = true; break;
       case 'timeout-ms': opts.timeoutMs = Number(val); break;
       case 'dry-run': opts.dryRun = true; break;
       default: throw new UsageError(`unknown option: ${a}`);
@@ -80,9 +101,14 @@ function parseArgs(argv) {
   if (!opts.target) throw new UsageError('--target is required');
   if (!SEVERITIES.includes(opts.fixAt)) throw new UsageError(`--fix-at must be one of ${SEVERITIES.join('|')}`);
   if (!(opts.verify in VERIFY_LEVELS)) throw new UsageError(`--verify must be one of ${Object.keys(VERIFY_LEVELS).join('|')}`);
+  if (opts.witness !== null && opts.witness !== 'dynamic') throw new UsageError('--witness must be dynamic');
   for (const s of opts.scanners) if (!SCANNERS.includes(s)) throw new UsageError(`unknown scanner: ${s}`);
   if (!opts.scanners.length) throw new UsageError('--scanners must name at least one scanner');
   if (!(opts.maxFindings > 0)) throw new UsageError('--max-findings must be a positive integer');
+  if (!opts.scanConfig.semgrep.length) opts.scanConfig.semgrep = [...DEFAULT_SCAN_CONFIG.semgrep];
+  if (!SUITE_NAME.test(opts.scanConfig.codeql_suite)) {
+    throw new UsageError('--codeql-suite must be a suite name such as security-extended');
+  }
   return opts;
 }
 
@@ -108,7 +134,6 @@ function realDeps() {
   const lazy = (mod, name) => (...a) => require(mod)[name](...a);
   return {
     runAgent: lazy('./agent.cjs', 'runAgent'),
-    partition: lazy('./partition.cjs', 'partition'),
     renderRemediation: lazy('./report.cjs', 'renderRemediation'),
     renderHandoff: lazy('./report.cjs', 'renderHandoff'),
     exec: realExec,
@@ -118,37 +143,11 @@ function realDeps() {
   };
 }
 
-const onPath = (bin) => (process.env.PATH || '').split(path.delimiter)
-  .some((d) => d && fs.existsSync(path.join(d, bin)));
-
 const ensureDir = (d) => fs.mkdirSync(d, { recursive: true });
 const writeJson = (f, o) => { ensureDir(path.dirname(f)); fs.writeFileSync(f, JSON.stringify(o, null, 2) + '\n'); };
 const readJson = (f) => JSON.parse(fs.readFileSync(f, 'utf8'));
 
-function defaultOutDir(target) {
-  const base = path.join(os.homedir(), 'sast-remediate', path.basename(target));
-  let n = 1;
-  if (fs.existsSync(base)) {
-    for (const d of fs.readdirSync(base)) {
-      const m = /^run-(\d+)$/.exec(d);
-      if (m) n = Math.max(n, Number(m[1]) + 1);
-    }
-  }
-  return path.join(base, `run-${n}`);
-}
-
 // ------------------------------------------------------------------- 1. scan
-
-const LANGS = [
-  ['javascript', ['package.json']],
-  ['python', ['pyproject.toml', 'requirements.txt', 'setup.py']],
-  ['go', ['go.mod']],
-  ['ruby', ['Gemfile']],
-  ['java', ['pom.xml', 'build.gradle', 'build.gradle.kts']],
-  ['rust', ['Cargo.toml']],
-];
-const detectLanguage = (root) =>
-  (LANGS.find(([, files]) => files.some((f) => fs.existsSync(path.join(root, f)))) || [null])[0];
 
 const TEST_COMMANDS = [
   ['package.json', (root) => {
@@ -167,52 +166,6 @@ function discoverTestCommand(root) {
   }
   return null;
 }
-
-// A scanner that is absent or exits non-zero is recorded and the run continues with what it has.
-// Both failing is fatal, because normalizing nothing would report a clean repository.
-function runScanners(opts, deps, target, scanDir) {
-  const raw = {};
-  const scanners = [];
-
-  if (opts.scans) {
-    for (const [name, file] of [['semgrep', 'semgrep.json'], ['codeql', 'codeql.sarif']]) {
-      if (!opts.scanners.includes(name)) continue;
-      const p = path.join(opts.scans, file);
-      if (!fs.existsSync(p)) { scanners.push({ name, status: 'absent', detail: `${p} not found` }); continue; }
-      raw[name] = readJson(p);
-      scanners.push({ name, status: 'reused', detail: p });
-    }
-    return { raw, scanners };
-  }
-
-  ensureDir(scanDir);
-  const present = deps.onPath || onPath;
-  for (const name of opts.scanners) {
-    if (!present(name)) { scanners.push({ name, status: 'absent', detail: 'not on PATH' }); continue; }
-    if (name === 'semgrep') {
-      const out = path.join(scanDir, 'semgrep.json');
-      const r = deps.exec('semgrep', ['scan', '--config', 'p/default', `--json-output=${out}`, target]);
-      if (!fs.existsSync(out)) { scanners.push({ name, status: 'failed', detail: trim(r.stderr) }); continue; }
-      raw.semgrep = readJson(out);
-      scanners.push({ name, status: r.status === 0 ? 'ok' : 'partial', detail: r.status === 0 ? out : trim(r.stderr) });
-    } else {
-      const lang = detectLanguage(target);
-      if (!lang) { scanners.push({ name, status: 'failed', detail: 'no language detected' }); continue; }
-      const db = path.join(scanDir, 'codeql-db');
-      const out = path.join(scanDir, 'codeql.sarif');
-      const c = deps.exec('codeql', ['database', 'create', db, `--language=${lang}`, `--source-root=${target}`, '--overwrite']);
-      if (c.status !== 0) { scanners.push({ name, status: 'failed', detail: trim(c.stderr) }); continue; }
-      const a = deps.exec('codeql', ['database', 'analyze', db, '--format=sarif-latest', `--output=${out}`,
-        '--sarif-add-snippets', `codeql/${lang}-queries:codeql-suites/${lang}-security-extended.qls`]);
-      if (!fs.existsSync(out)) { scanners.push({ name, status: 'failed', detail: trim(a.stderr) }); continue; }
-      raw.codeql = readJson(out);
-      scanners.push({ name, status: a.status === 0 ? 'ok' : 'partial', detail: a.status === 0 ? out : trim(a.stderr) });
-    }
-  }
-  return { raw, scanners };
-}
-
-const trim = (s) => String(s || '').trim().split('\n').slice(-3).join(' ').slice(0, 300);
 
 // --------------------------------------------------------- 2. normalize and validate
 
@@ -347,7 +300,7 @@ function buildTriagePrompt(f, ctx) {
     `# Enclosing source\n\`\`\`\n${f.context.enclosing_excerpt}\n\`\`\``,
     '',
     `# Repository facts\ntest command: ${ctx.testCommand || 'none discovered'}`,
-    `app harness: ${ctx.appHarness ? JSON.stringify(ctx.appHarness) : 'none discovered'}`,
+    `app harness: ${ctx.appHarness && ctx.appHarness.length ? JSON.stringify(ctx.appHarness) : 'none discovered'}`,
     `enabled witness tiers: ${ctx.witnessTiers.join(', ')}`,
     '',
     `# Rubric\n${rubric}`,
@@ -359,21 +312,23 @@ function buildTriagePrompt(f, ctx) {
 const TRIAGE_TOOLS = ['Read', 'Grep', 'Glob'];
 
 async function triageAll(findings, ctx) {
-  const queue = order(findings).filter((f) => stageOf(f) === 'triage');
+  const queue = order(findings).filter((f) => stageOf(f, ctx.opts.verify) === 'triage');
   const budget = ctx.opts.maxFindings;
   const doing = queue.slice(0, budget);
   const deferred = queue.slice(budget).map((f) => f.id);
+  const failed = [];
 
   for (const f of doing) {
     const res = await ctx.deps.runAgent({
       prompt: buildTriagePrompt(f, ctx),
       schemaPath: AGENT_SCHEMA, schemaPointer: '#/$defs/triage',
       cwd: ctx.target, model: ctx.opts.model, timeoutMs: ctx.opts.timeoutMs,
-      allowedTools: TRIAGE_TOOLS,
+      tools: TRIAGE_TOOLS,
     });
     if (!res.ok) {
-      // Malformed output is discarded, never repaired. agent.cjs already spent its one re-run.
-      f.disposition = { state: 'deferred', reason: 'triage_agent_failed', detail: res.reason };
+      // No answer is not a verdict. The record stays at triage, so the next run asks again.
+      failed.push({ id: f.id, stage: 'triage', reason: res.reason });
+      continue;
     } else if (res.data.split) {
       // Re-emitting the split sites as separate findings is not implemented; the record is
       // handed to a human rather than silently triaged under a contract that fits neither half.
@@ -383,7 +338,7 @@ async function triageAll(findings, ctx) {
     }
     ctx.save(f);
   }
-  return { triaged: doing.length, deferred };
+  return { triaged: doing.length - failed.length, deferred, failed };
 }
 
 // ------------------------------------------------------------------- 5. gate
@@ -391,7 +346,7 @@ async function triageAll(findings, ctx) {
 function gateAll(findings, policy, ctx) {
   let n = 0;
   for (const f of findings) {
-    if (stageOf(f) !== 'gate') continue;
+    if (stageOf(f, ctx.opts.verify) !== 'gate') continue;
     f.gate = gate(f.triage, policy);
     ctx.save(f);
     n++;
@@ -455,7 +410,7 @@ function buildFixPrompt(f, ctx, priorFailures) {
     '',
     `# Forbidden resolutions\n${c.forbidden_resolutions.map((r) => `- ${r}`).join('\n')}`,
     '',
-    `# Repository commands\nbuild: ${ctx.buildCommand || 'none discovered'}`,
+    `# Repository commands\nThe harness runs these after you return. You have no shell.\nbuild: ${ctx.buildCommand || 'none discovered'}`,
     `test: ${ctx.testCommand || 'none discovered'}`,
     `lint: ${ctx.lintCommand || 'none discovered'}`,
   ];
@@ -463,60 +418,37 @@ function buildFixPrompt(f, ctx, priorFailures) {
     parts.push('', '# The previous attempt failed these checks\n'
       + priorFailures.map((x) => `- ${x.obligation}: ${x.reason}`).join('\n'));
   }
-  parts.push('', 'Commit your change, and the witness file when the tier has one, to the current branch.',
+  parts.push('', 'Do not commit. List every file you changed or created, the witness file included, in',
+    'declared_files. Only the declared files are committed, by the harness, after its checks pass.',
     'Return {"outcome":"patched","declared_files":[...],"enforcement_note":"..."}',
     'or {"outcome":"cannot_fix","reason":"..."} if the contract cannot be satisfied as written.');
   return parts.join('\n');
 }
 
-// Prose cannot enforce the rule above, so this does. It is derived from the record rather than
-// from a fixed word list, because the rule ids this skill has never seen are the ones that matter.
-const RULE_ID_FORM =
-  /\b(?:js|javascript|ts|typescript|py|python|java|cpp|cs|go|rb|ruby|swift|rust|ql|actions)\/[a-z0-9]+(?:-[a-z0-9]+)+\b(?!\.[a-z]{1,4}\b)/i;
-
-function leakTerms(finding) {
-  const terms = new Set(SCANNERS);
-  for (const s of finding.sites) {
-    for (const o of s.observations) {
-      terms.add(o.scanner);
-      terms.add(o.rule_id);
-      if (o.rule_name) terms.add(o.rule_name);
-      if (o.native_fingerprint) terms.add(o.native_fingerprint);
-      if (o.message) terms.add(o.message.trim());
-    }
-  }
-  return [...terms].filter((t) => t && t.length >= 4);
-}
-
-const leakError = (prompt, finding) => {
-  try { assertNoLeak(prompt, finding); return null; } catch (e) { return e.message; }
-};
-
-function assertNoLeak(prompt, finding) {
-  const hay = prompt.toLowerCase();
-  const hit = leakTerms(finding).find((t) => hay.includes(t.toLowerCase()));
-  if (hit) throw new Error(`fixer prompt leaked scanner material: ${JSON.stringify(hit.slice(0, 120))}`);
-  const form = RULE_ID_FORM.exec(prompt);
-  if (form) throw new Error(`fixer prompt carries a rule id: ${JSON.stringify(form[0])}`);
-}
-
-const FIX_TOOLS = ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash'];
+// No shell. The harness builds, tests and rescans; a shell narrowed to the test command is no
+// boundary when the fixer can edit the script that command runs.
+const FIX_TOOLS = ['Read', 'Grep', 'Glob', 'Edit', 'Write'];
 const AUDIT_TOOLS = ['Read', 'Grep', 'Glob'];
 
-function collectDiff(wt, base, ctx) {
-  // add -A first so an untracked witness file is part of the diff the guard sees.
-  ctx.git(['add', '-A'], wt);
+// Stages exactly the declared files on top of base, whether or not the fixer committed. Anything
+// else the call left in the worktree, such as a hook's state file, never reaches the branch.
+function collectDiff(wt, base, files, ctx) {
+  ctx.git(['reset', '-q', '--soft', base], wt);
+  ctx.git(['reset', '-q'], wt);
+  for (const file of files) ctx.git(['add', '-A', '--', file], wt);
   const r = ctx.git(['diff', '--cached', base], wt);
   return r.status === 0 ? r.stdout : '';
 }
 
 async function fixOne(f, ctx) {
   const attempt = f.patches.length + 1;
-  // Branches live in the target repository, which outlives any one run; everything else lives
-  // in the per-run output directory. Without the run id, a second run against the same
-  // repository collided with the first run's branches and died before the fixer was called.
+  // Branches live in the target repository, which outlives any one run; worktrees live under
+  // ctx.worktreeRoot and everything else in the per-run output directory. Without the run id, a
+  // second run against the same repository collided with the first run's branches and died
+  // before the fixer was called.
   const branch = `sast-fix/${refSafe(ctx.runId)}/${f.id}/${attempt}`;
-  const wt = path.join(ctx.outDir, 'worktrees', `${f.id}-${attempt}`);
+  const wt = path.join(ctx.worktreeRoot, `${f.id}-${attempt}`);
+  clearAttempt(ctx.git, branch, wt);
   const add = ctx.git(['worktree', 'add', '-b', branch, wt, ctx.base]);
   if (add.status !== 0) {
     f.patches.push({ attempt, branch, worktree: wt, outcome: 'error',
@@ -544,13 +476,13 @@ async function fixOne(f, ctx) {
 
   const res = await ctx.deps.runAgent({
     prompt, schemaPath: AGENT_SCHEMA, schemaPointer: '#/$defs/fix',
-    cwd: wt, model: ctx.opts.model, timeoutMs: ctx.opts.timeoutMs, allowedTools: FIX_TOOLS,
+    cwd: wt, model: ctx.opts.model, timeoutMs: ctx.opts.timeoutMs, tools: FIX_TOOLS,
   });
   if (!res.ok) {
-    patch.outcome = 'agent_failed';
-    patch.detail = res.reason;
-    patch.verification = {};
-    return;
+    // No answer is not an attempt: it takes no attempt slot, and the next run tries again.
+    f.patches.pop();
+    clearAttempt(ctx.git, branch, wt);
+    return { failed: res.reason };
   }
   patch.outcome = res.data.outcome;
   if (res.data.outcome === 'cannot_fix') {
@@ -561,31 +493,27 @@ async function fixOne(f, ctx) {
   patch.declared_files = res.data.declared_files;
   patch.enforcement_note = res.data.enforcement_note;
   patch.verification = await verifyPatch(f, patch, ctx);
-  patch.typed_failures = evaluateVerification(patch.verification, VERIFY_LEVELS[ctx.opts.verify])
+  patch.typed_failures = evaluateVerification(patch.verification, VERIFY_LEVELS[ctx.opts.verify], f.triage.contract.witness.tier)
     .failed.map((o) => ({ obligation: o, reason: (patch.verification[o] || {}).reason || 'failed' }));
 }
 
 async function fixAll(findings, ctx) {
-  const fixable = findings.filter((f) => stageOf(f) === 'fix');
-  if (!fixable.length) return { waves: [], attempted: 0 };
-  const waves = ctx.deps.partition(fixable);
-  const byId = new Map(findings.map((f) => [f.id, f]));
+  const level = ctx.opts.verify;
+  const fixable = findings.filter((f) => stageOf(f, level) === 'fix');
   let attempted = 0;
-  for (const wave of waves) {
-    for (const id of wave) {
-      const f = byId.get(id);
-      if (!f) continue;
-      // Two attempts, and the cap is in the schema as well as here.
-      while (stageOf(f) === 'fix') {
-        await fixOne(f, ctx);
-        attempted++;
-        ctx.save(f);
-        const last = f.patches[f.patches.length - 1];
-        if (last.outcome === 'cannot_fix' || last.outcome === 'agent_failed' || last.outcome === 'error') break;
-      }
+  const failed = [];
+  for (const f of order(fixable)) {
+    // Two attempts, and the cap is in the schema as well as here. Only a patch that failed its
+    // checks earns a retry; every other outcome is final, as dispositionFor records it.
+    while (stageOf(f, level) === 'fix') {
+      const r = await fixOne(f, ctx);
+      attempted++;
+      if (r && r.failed) { failed.push({ id: f.id, stage: 'fix', reason: r.failed }); break; }
+      ctx.save(f);
+      if (f.patches[f.patches.length - 1].outcome !== 'patched') break;
     }
   }
-  return { waves, attempted };
+  return { attempted, failed };
 }
 
 // ----------------------------------------------------------------- 7. verify
@@ -598,7 +526,11 @@ async function verifyPatch(f, patch, ctx) {
   const v = {};
   const contract = f.triage.contract;
   const wt = patch.worktree;
+  const tier = contract.witness.tier;
   const need = (name) => required.has(name);
+  // `holds`, not `=== 'pass'`: an excused unavailable (the argued pair, or a red suite on base)
+  // must not stop the run, exactly like a pass.
+  const holds = (name) => v[name].status === 'pass' || (v[name].status === 'unavailable' && excused(name, tier));
   let stopped = false;
 
   if (need('frozen_target')) {
@@ -608,14 +540,13 @@ async function verifyPatch(f, patch, ctx) {
     stopped = !same;
   }
 
-  const diff = collectDiff(wt, ctx.base, ctx);
+  const diff = collectDiff(wt, ctx.base, patch.declared_files, ctx);
   if (!stopped && need('deterministic_guard')) {
     if (!diff.trim()) {
       v.deterministic_guard = { status: 'fail', reason: 'no_diff' };
       stopped = true;
     } else {
       const g = guardDiff(diff, contract, {
-        requireWitnessFile: contract.witness.tier !== 'argued',
         sinkFiles: [...new Set(f.sites.map((s) => s.locus.file))],
         sinkText: f.flow.kind === 'traced' ? f.flow.steps[f.flow.steps.length - 1].code : f.flow.sink.code,
       });
@@ -626,28 +557,41 @@ async function verifyPatch(f, patch, ctx) {
   }
   patch.diff_bytes = diff.length;
 
+  if (!stopped && diff.trim()) {
+    const c = ctx.git(['commit', '-q', '-m', `sast-remediate: enforce the invariant for ${f.id}`], wt);
+    if (c.status !== 0) {
+      patch.outcome = 'error';
+      patch.detail = `commit_failed: ${trim(c.stderr)}`;
+      return v;
+    }
+  }
+
   if (!stopped && need('differential_witness')) {
-    v.differential_witness = await runDifferentialWitness(contract, patch, ctx);
-    stopped = v.differential_witness.status !== 'pass';
+    // A dynamic run answers the control too (it sends the control exchange to both trees), and
+    // the argued tier has none either way, so either answers obligation 4 as well.
+    const w = await runDifferentialWitness(contract, patch, ctx);
+    v.differential_witness = w.differential_witness;
+    if (w.functional_control) v.functional_control = w.functional_control;
+    stopped = !holds('differential_witness');
   }
 
   if (!stopped && need('functional_control')) {
-    v.functional_control = runFunctionalControl(contract, patch, ctx);
-    stopped = v.functional_control.status !== 'pass';
+    if (!v.functional_control) v.functional_control = runFunctionalControl(contract, patch, ctx);
+    stopped = !holds('functional_control');
   }
 
   if (!stopped && need('regression_suite')) {
     v.regression_suite = runRegressionSuite(patch, ctx);
-    stopped = v.regression_suite.status === 'fail';
+    stopped = !holds('regression_suite');
   }
 
   if (!stopped && need('no_new_findings')) {
-    const r = rescan(f, patch, ctx);
+    const r = rescan(f, patch.worktree, path.join(ctx.outDir, 'scans', `${f.id}-${patch.attempt}`), ctx);
     v.no_new_findings = r.obligation;
     // Recorded for the report and read by no transition. A correct fix often keeps the shape
     // the rule matches, so gating on the rule going quiet creates pressure toward pattern defeat.
     v.rescan = r.rescan;
-    stopped = r.obligation.status !== 'pass';
+    stopped = !holds('no_new_findings');
   }
 
   if (need('hostile_auditor')) {
@@ -658,7 +602,7 @@ async function verifyPatch(f, patch, ctx) {
 
 function baseTree(ctx) {
   if (ctx._baseTree) return ctx._baseTree;
-  const wt = path.join(ctx.outDir, 'worktrees', 'base');
+  const wt = path.join(ctx.worktreeRoot, 'base');
   if (!fs.existsSync(wt)) {
     const r = ctx.git(['worktree', 'add', '--detach', wt, ctx.base]);
     if (r.status !== 0) return null;
@@ -684,21 +628,14 @@ function runRegressionSuite(patch, ctx) {
 }
 
 async function runDifferentialWitness(contract, patch, ctx) {
-  const tier = contract.witness.tier;
-  if (tier !== 'dynamic') {
-    // witness-run.cjs throws on executable and structural. An argued tier can never reach
-    // verified by design, so both are recorded as unavailable rather than assumed passing.
-    return { status: 'unavailable', reason: `tier_not_implemented:${tier}` };
-  }
-  const base = baseTree(ctx);
-  if (!base) return { status: 'unavailable', reason: 'no_base_tree' };
+  const { witnessObligations } = require('./witness-run.cjs');
+  const w = contract.witness;
   try {
-    const { runWitness } = require('./witness-run.cjs');
-    const r = await runWitness(contract.witness, { base, patched: patch.worktree }, {});
-    return r.differential_ok ? { status: 'pass', detail: r.classification }
-      : { status: 'fail', reason: r.classification || 'witness_not_differential' };
+    return await witnessObligations(w,
+      { baseDir: w.tier === 'dynamic' ? baseTree(ctx) : null, headDir: patch.worktree, harnesses: ctx.appHarness },
+      { allowDynamic: ctx.opts.witness === 'dynamic' });
   } catch (e) {
-    return { status: 'unavailable', reason: `witness_error:${trim(e.message)}` };
+    return { differential_witness: { status: 'unavailable', reason: `witness_error:${trim(e.message)}` } };
   }
 }
 
@@ -717,27 +654,6 @@ function runFunctionalControl(contract, patch, ctx) {
   }
   // An http control is exercised by the dynamic witness run, which is opt-in.
   return { status: 'unavailable', reason: 'http_control_needs_the_dynamic_tier' };
-}
-
-function rescan(f, patch, ctx) {
-  const dir = path.join(ctx.outDir, 'scans', `${f.id}-${patch.attempt}`);
-  const { raw, scanners } = runScanners({ ...ctx.opts, scans: null }, ctx.deps, patch.worktree, dir);
-  if (!Object.keys(raw).length) {
-    return {
-      obligation: { status: 'unavailable', reason: 'rescan_produced_no_output' },
-      rescan: { ran: false, scanners, original_absent: null, new_findings: [] },
-    };
-  }
-  const after = normalize(raw, makeRepo(patch.worktree), `${ctx.runId}-rescan`).findings;
-  const before = new Set(ctx.baseIds);
-  const newFindings = after.filter((x) => !before.has(x.id)).map((x) => x.id);
-  const originalAbsent = !after.some((x) => x.id === f.id);
-  return {
-    obligation: newFindings.length
-      ? { status: 'fail', reason: 'rescan_new', new_findings: newFindings }
-      : { status: 'pass' },
-    rescan: { ran: true, scanners, original_absent: originalAbsent, new_findings: newFindings },
-  };
 }
 
 function buildAuditPrompt(f, patch, diff) {
@@ -771,7 +687,7 @@ async function runAudit(f, patch, diff, ctx) {
   const res = await ctx.deps.runAgent({
     prompt, schemaPath: AGENT_SCHEMA, schemaPointer: '#/$defs/audit',
     cwd: patch.worktree, model: ctx.opts.model, timeoutMs: ctx.opts.timeoutMs,
-    allowedTools: AUDIT_TOOLS,
+    tools: AUDIT_TOOLS,
   });
   if (!res.ok) return { status: 'fail', reason: `audit_agent_failed:${res.reason}` };
   patch.audit = res.data;
@@ -800,12 +716,18 @@ function dispositionFor(f, level) {
   const last = f.patches[f.patches.length - 1];
   if (!last) return null;
   if (last.outcome === 'cannot_fix') return { state: 'fix_declined', reason: last.reason, branch: last.branch };
-  const ev = evaluateVerification(last.verification, VERIFY_LEVELS[level]);
-  if (!ev.verified) {
-    return { state: 'fix_failed', branch: last.branch, attempts: f.patches.length,
-      failed: ev.failed, missing: ev.missing, worktree: last.worktree };
-  }
+  // `error` means the worktree or the harness commit failed, so the branch carries no fix.
+  const branch = last.outcome === 'error' ? null : last.branch;
   const tier = f.triage.contract.witness.tier;
+  // Only a patch is judged. A crash, a refusal or a failed worktree is a failed fix at every level,
+  // including `none`, where an empty verification would otherwise count as verified.
+  const ev = last.outcome === 'patched'
+    ? evaluateVerification(last.verification, VERIFY_LEVELS[level], tier)
+    : { verified: false, failed: [], missing: [] };
+  if (!ev.verified) {
+    return { state: 'fix_failed', branch, attempts: f.patches.length, outcome: last.outcome,
+      detail: last.detail, failed: ev.failed, missing: ev.missing, worktree: last.worktree };
+  }
   return {
     state: tier === 'argued' ? 'fixed_unwitnessed' : 'fixed',
     branch: last.branch, verify_level: level, skipped_obligations: ev.skipped,
@@ -813,9 +735,9 @@ function dispositionFor(f, level) {
   };
 }
 
-function finalize(findings, level, ctx) {
+function finalize(findings, level, ctx, open = new Set()) {
   for (const f of findings) {
-    if (f.disposition) continue;
+    if (f.disposition || open.has(f.id)) continue;
     const d = dispositionFor(f, level);
     if (d) { f.disposition = d; ctx.save(f); }
   }
@@ -829,36 +751,18 @@ function makeSaver(outDir) {
   return (f) => writeJson(path.join(dir, `${f.id}.json`), f);
 }
 
-// Records already on disk win, so triage, gate and patches survive a re-run and stageOf decides
-// what each record still needs. This is the whole of resume.
-function mergeExisting(findings, outDir) {
-  const dir = path.join(outDir, 'findings');
-  if (!fs.existsSync(dir)) return 0;
-  const prior = new Map();
-  for (const file of fs.readdirSync(dir)) {
-    if (!file.endsWith('.json')) continue;
-    try { const r = readJson(path.join(dir, file)); prior.set(r.id, r); } catch { /* a truncated record is re-derived */ }
-  }
-  let n = 0;
-  findings.forEach((f, i) => {
-    const p = prior.get(f.id);
-    if (!p) return;
-    findings[i] = { ...f, triage: p.triage, gate: p.gate, patches: p.patches || [], disposition: p.disposition, prior: p.prior };
-    n++;
-  });
-  return n;
-}
-
 function planLines(opts, target, outDir, base) {
   return [
     `target        ${target}`,
     `out           ${outDir}`,
+    `worktrees     ${worktreeRootFor(outDir)}`,
     `base commit   ${base || 'not a git repository'}`,
     `fix at        ${opts.fixAt}`,
     `verify        ${opts.verify}  [${VERIFY_LEVELS[opts.verify].join(' ') || 'nothing is checked'}]`,
     `skipped       ${VERIFY_LEVELS.full.filter((o) => !VERIFY_LEVELS[opts.verify].includes(o)).join(' ') || 'none'}`,
     `scanners      ${opts.scans ? `reused from ${opts.scans}`
       : opts.scanners.map((s) => `${s}${onPath(s) ? '' : ' (absent)'}`).join(' ')}`,
+    `scan config   semgrep ${opts.scanConfig.semgrep.join(' ')}; codeql ${opts.scanConfig.codeql_suite}`,
     `max findings  ${opts.maxFindings === Infinity ? 'unbounded' : opts.maxFindings}`,
     `test command  ${discoverTestCommand(target) || 'none discovered'}`,
     `stages        scan normalize pre-resolve triage gate${opts.triageOnly ? '' : ' fix verify'} report`,
@@ -868,10 +772,10 @@ function planLines(opts, target, outDir, base) {
 async function run(opts, deps = realDeps()) {
   const target = path.resolve(opts.target);
   if (!fs.existsSync(target)) throw new UsageError(`--target does not exist: ${target}`);
-  const outDir = path.resolve(opts.out || defaultOutDir(target));
   const git = (args, cwd = target) => deps.exec('git', ['-C', cwd, ...args]);
   const head = git(['rev-parse', 'HEAD']);
   const base = head.status === 0 ? head.stdout.trim() : null;
+  const outDir = path.resolve(opts.out || defaultOutDir(target, base));
 
   if (opts.dryRun) {
     for (const l of planLines(opts, target, outDir, base)) console.log(l);
@@ -879,7 +783,25 @@ async function run(opts, deps = realDeps()) {
   }
 
   ensureDir(outDir);
+  const worktreeRoot = worktreeRootFor(outDir);
+  fs.mkdirSync(worktreeRoot, { recursive: true, mode: 0o700 });
   const runId = path.basename(outDir);
+  // A resumed run judges its saved patches with the level they were verified at.
+  const metaFile = path.join(outDir, 'run-metadata.json');
+  if (fs.existsSync(metaFile)) deps.log(`resuming ${outDir}`);
+  const recorded = readRecorded(metaFile);
+  if (recorded.level && recorded.level !== opts.verify) {
+    deps.log(`${outDir} was started at --verify=${recorded.level}; resuming at that level`);
+    opts = { ...opts, verify: recorded.level };
+  }
+  // The rescan is only comparable to the baseline when both ran the same rules.
+  if (recorded.scanConfig && JSON.stringify(recorded.scanConfig) !== JSON.stringify(opts.scanConfig)) {
+    deps.log(`${outDir} was started with scanner config ${JSON.stringify(recorded.scanConfig)}; resuming with it`);
+    opts = { ...opts, scanConfig: recorded.scanConfig };
+  }
+  if (!recorded.level || !recorded.scanConfig) {
+    writeJson(metaFile, { run_id: runId, verify_level: opts.verify, scan_config: opts.scanConfig, base_commit: base });
+  }
   const policy = { fix_at: opts.fixAt };
   const startedAt = deps.now();
 
@@ -897,14 +819,18 @@ async function run(opts, deps = realDeps()) {
   const resumed = mergeExisting(findings, outDir);
 
   const testCommand = discoverTestCommand(target);
-  let appHarness = null;
+  let appHarness = [];
   try { appHarness = require('./app-harness.cjs').discoverAppHarness(target); } catch { /* optional */ }
+  const dynamicOffered = opts.witness === 'dynamic' && appHarness.length > 0;
+  if (opts.witness === 'dynamic' && !dynamicOffered) {
+    deps.log('--witness=dynamic: no app harness discovered, so triage is offered argued only');
+  }
 
   const ctx = {
-    opts, deps, target, outDir, runId, git, base, save, testCommand, appHarness,
+    opts, deps, target, outDir, runId, worktreeRoot, git, base, save, testCommand, appHarness,
     buildCommand: null, lintCommand: null,
-    witnessTiers: ['argued'],
-    baseIds: findings.map((f) => f.id),
+    witnessTiers: dynamicOffered ? ['dynamic', 'argued'] : ['argued'],
+    baseline: baselineOf(raw, findings, opts.scanConfig, scanners),
   };
 
   // 3. pre-resolve
@@ -918,49 +844,45 @@ async function run(opts, deps = realDeps()) {
   const gated = gateAll(findings, policy, ctx);
 
   // 6 and 7. fix and verify
-  let fixSummary = { waves: [], attempted: 0 };
+  let fixSummary = { attempted: 0, failed: [] };
   let degraded = null;
-  const wantsFix = findings.some((f) => stageOf(f) === 'fix');
+  const wantsFix = findings.some((f) => stageOf(f, opts.verify) === 'fix');
   if (opts.triageOnly) {
     degraded = wantsFix ? 'triage_only' : null;
   } else if (!base) {
     degraded = wantsFix ? 'target_is_not_a_git_repository' : null;
-  } else if (!testCommand && !opts.allowUnverifiedFixes && VERIFY_LEVELS[opts.verify].includes('regression_suite')) {
-    // No patching without verification. Pass --allow-unverified-fixes to override.
-    degraded = wantsFix ? 'no_test_command_discoverable' : null;
   } else {
     fixSummary = await fixAll(findings, ctx);
   }
 
   // 8. report
-  finalize(findings, opts.verify, ctx);
+  const failures = [...tr.failed, ...fixSummary.failed];
+  finalize(findings, opts.verify, ctx, new Set(failures.map((x) => x.id)));
 
   const unresolved = findings.filter((f) => !f.disposition);
-  const incompleteReason = degraded
-    ? `${degraded}: ${unresolved.length} finding(s) left without a terminal disposition`
-    : tr.deferred.length
-      ? `max_findings=${opts.maxFindings} reached, ${tr.deferred.length} finding(s) deferred to the next run`
-      : unresolved.length ? `${unresolved.length} finding(s) left without a terminal disposition` : null;
+  const why = incompleteReason({ degraded, unresolved: unresolved.length, budget: opts.maxFindings,
+    deferred: tr.deferred.length, failures });
 
   const meta = {
     run_id: runId, target, base_commit: base, policy,
     verify_level: opts.verify,
     verify_obligations: VERIFY_LEVELS[opts.verify],
     skipped_obligations: VERIFY_LEVELS.full.filter((o) => !VERIFY_LEVELS[opts.verify].includes(o)),
-    run_status: incompleteReason ? 'incomplete' : 'complete',
-    incomplete_reason: incompleteReason,
+    scan_config: opts.scanConfig,
+    run_status: why ? 'incomplete' : 'complete',
+    incomplete_reason: why,
+    agent_failures: failures,
     dropped: norm.dropped,
     scanners,
     counts: {
       raw: norm.raw_count, sites: norm.site_count, findings: findings.length,
       resumed, pre_resolved: preResolved, triaged: tr.triaged, gated,
-      deferred: tr.deferred.length, fix_attempts: fixSummary.attempted,
-      waves: fixSummary.waves.length,
+      deferred: tr.deferred.length, agent_failures: failures.length, fix_attempts: fixSummary.attempted,
     },
     started_at: startedAt, finished_at: deps.now(),
   };
 
-  writeJson(path.join(outDir, 'run-metadata.json'), meta);
+  writeJson(metaFile, meta);
   fs.writeFileSync(path.join(outDir, 'REMEDIATION.md'), deps.renderRemediation(findings, meta));
   fs.writeFileSync(path.join(outDir, 'HANDOFF.md'), deps.renderHandoff(findings, meta));
   deps.log(`${runId}: ${meta.run_status}  findings=${findings.length} ${outDir}`);
@@ -986,10 +908,11 @@ module.exports = {
   bundleDef,
   leakError,
   refSafe,
+  worktreeRootFor,
   parseArgs, run, main, USAGE, UsageError,
-  buildFixPrompt, buildTriagePrompt, buildAuditPrompt, assertNoLeak, leakTerms, witnessBrief,
-  pathPolicy, preResolve, gateAll, dispositionFor, finalize, mergeExisting,
-  discoverTestCommand, detectLanguage, runScanners, normalizeAndValidate, planLines, realExec,
+  buildFixPrompt, buildTriagePrompt, buildAuditPrompt, assertNoLeak, recordTerms, authoredProse, witnessBrief,
+  pathPolicy, preResolve, gateAll, dispositionFor, finalize, mergeExisting, defaultOutDir,
+  discoverTestCommand, normalizeAndValidate, planLines, realExec,
 };
 
 if (require.main === module) main(process.argv.slice(2)).then((c) => process.exit(c));

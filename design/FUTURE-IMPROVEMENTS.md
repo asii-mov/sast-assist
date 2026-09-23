@@ -2,13 +2,14 @@
 
 Planned work, deferred out of current scope. Ordered by value.
 
-## 1. Dynamic verification (built, proven, not wired in)
+## 1. Dynamic verification (wired in behind `--witness=dynamic`, not the default)
 
 Drive the running application over its real network interface and verify a patch against the
 boundary an attacker actually reaches.
 
-**Status: implemented and proven end to end, but deliberately not the default.**
-`selectWitnessTier` does not auto-select it. Enable explicitly with `--witness=dynamic`.
+**Status: implemented and proven end to end, opt-in via `--witness=dynamic`.**
+`bin/run.cjs` offers triage the `dynamic` tier only when the operator passes that flag and
+`discoverAppHarness` finds a harness in the target; otherwise triage is offered `argued` only.
 
 Why it is worth turning on later. Source analysis and unit tests both reason about the handler.
 The vulnerability frequently lives in the gap between the handler and the wire: middleware
@@ -36,34 +37,37 @@ Before enabling it on a real repo, answer these:
   than it looks.
 - Who writes the fixture data and the dummy principals? A cross-tenant witness needs at least
   two dummy tenants with distinguishable data.
-- Is per-wave app boot affordable against your CI budget?
+- Is per-attempt app boot affordable against your CI budget?
 
 **The functional control is NOT deferred.** It was discovered while designing this tier but it
 applies to every tier. It stays active, because without it a patch can satisfy every other
 obligation by disabling the functionality.
 
-## 2. Orchestration driver
-
-The stage that spawns triage, fix and audit agents. `DESIGN.md` section 11, step 5. The
-deterministic core and every agent contract exist; nothing drives them yet.
-
-## 3. `partition.cjs`: conflict-graph fix waves
-
-Partition findings into maximal independent sets so parallel fixers cannot collide. Specified in
-`DESIGN.md` section 4.6. Needed only once a fixer is actually writing patches.
-
-## 4. `ledger.cjs`: leases, resume and prior-run carry
+## 2. `ledger.cjs`: leases, resume and prior-run carry
 
 Parent-owned read/write with TTL leases, so a crashed agent is distinguishable from a slow one.
 
-## 5. Remaining witness tiers in the runner
+## 3. Remaining witness tiers in the runner
 
 `witness-run.cjs` implements `dynamic` and `argued`. The `executable` and `structural` tiers
-throw rather than pretending. `executable` becomes the default once implemented, so this blocks
-the driver.
+throw rather than pretending. `executable` becomes the default once implemented.
 
-## 6. Scanner coverage gaps found during the build
+Why `executable` is deferred rather than built cheaply. The witness file would be written by the
+fixer during the fix, which breaks the rule that a witness is authored before the fix exists: a
+fixer can write a test that imports something only the patch adds, so it fails on base and passes
+on the patch, looking exactly like a valid differential. Telling "assertion failed" apart from
+"crashed because it needs new code" needs each framework's own result format, TAP, pytest, go
+test; exit codes alone cannot do it. Done with exit codes anyway, the tier would label a gamed fix
+`fixed` instead of `fixed_unwitnessed`, which is worse than not having it.
+
+## 4. Scanner coverage gaps found during the build
 
 Neither scanner caught the SQL injection in `fixtures/vuln-app/src/routes/orders.js`, a template
 string interpolated straight into a query. Worth understanding before trusting either tool's
 silence. See the silent-zero section in `references/INGEST.md`.
+
+## 5. Rescan delta against a same-rules scan of base
+
+With `--scans`, the delta baseline comes from a scan whose rules the tool cannot see. Scanning
+base once with the configured rules and diffing against that would remove the operator's burden,
+at the cost of the scan `--scans` skips.

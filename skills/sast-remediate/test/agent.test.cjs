@@ -15,6 +15,7 @@ const { runAgent, realExec, argvFor, extractJson } = require(path.join(ROOT, 'bi
 
 const SCHEMA = path.join(ROOT, 'schema/agent-results.schema.json');
 const TRIAGE = '#/$defs/triage';
+const TOOLS = ['Read'];
 
 const tests = [];
 const t = (name, fn) => tests.push([name, fn]);
@@ -55,7 +56,7 @@ section('envelope: the shape the real CLI prints');
 
 t('clean JSON in the result text validates and returns ok on one call', async () => {
   const exec = fakeExec(envelope(JSON.stringify(GOOD)));
-  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, exec });
+  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: TOOLS, exec });
   assert.strictEqual(r.ok, true, r.reason);
   assert.deepStrictEqual(r.data, GOOD);
   assert.strictEqual(exec.calls.length, 1);
@@ -65,21 +66,21 @@ t('prose around the object is stripped, braces in the prose and nesting survive 
   const text = `Here is my call {see below}. I judged it safe.\n\n\`\`\`json\n${
     JSON.stringify(GOOD)}\n\`\`\`\n\nHappy to re-check {if asked}.`;
   const exec = fakeExec(envelope(text));
-  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, exec });
+  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: TOOLS, exec });
   assert.strictEqual(r.ok, true, r.reason);
   assert.deepStrictEqual(r.data, GOOD);
 });
 
 t('a bare result object, not an array, is read the same way', async () => {
   const exec = fakeExec({ stdout: JSON.stringify({ type: 'result', subtype: 'success', result: JSON.stringify(GOOD) }) });
-  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, exec });
+  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: TOOLS, exec });
   assert.strictEqual(r.ok, true, r.reason);
 });
 
 t('is_error in the envelope is a failure even when the text parses', async () => {
   const bad = envelope(JSON.stringify(GOOD), { is_error: true, subtype: 'error_during_execution' });
   const exec = fakeExec(bad, bad);
-  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, exec });
+  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: TOOLS, exec });
   assert.strictEqual(r.ok, false);
   assert.match(r.reason, /reported failure/);
 });
@@ -87,7 +88,7 @@ t('is_error in the envelope is a failure even when the text parses', async () =>
 t('stdout that is not JSON at all is a failure, not a crash', async () => {
   const junk = { stdout: 'claude: command failed\n' };
   const exec = fakeExec(junk, junk);
-  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, exec });
+  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: TOOLS, exec });
   assert.strictEqual(r.ok, false);
   assert.match(r.reason, /not JSON/);
 });
@@ -96,7 +97,7 @@ section('discard and re-ask exactly once');
 
 t('malformed then good returns ok on the second call', async () => {
   const exec = fakeExec(envelope('I could not decide, sorry.'), envelope(JSON.stringify(GOOD)));
-  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, exec });
+  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: TOOLS, exec });
   assert.strictEqual(r.ok, true, r.reason);
   assert.deepStrictEqual(r.data, GOOD);
   assert.strictEqual(exec.calls.length, 2, 'the re-ask must be a fresh call');
@@ -106,7 +107,7 @@ t('malformed twice gives up, and the third call is never made', async () => {
   const junk = envelope('no object here');
   const spare = envelope(JSON.stringify(GOOD));
   const exec = fakeExec(junk, junk, spare);
-  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, exec });
+  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: TOOLS, exec });
   assert.strictEqual(r.ok, false);
   assert.strictEqual(exec.calls.length, 2, 'never two retries');
   assert.strictEqual(exec.left(), 1, 'a third call would have consumed the spare good answer');
@@ -118,14 +119,14 @@ t('malformed twice gives up, and the third call is never made', async () => {
 t('truncated JSON is discarded, never repaired into an object', async () => {
   const cut = envelope('{"verdict":"not_exploitable","established_by":"agent"');
   const exec = fakeExec(cut, cut);
-  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, exec });
+  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: TOOLS, exec });
   assert.strictEqual(r.ok, false);
   assert.strictEqual(exec.calls.length, 2);
 });
 
 t('a non-zero exit is re-asked once like any other discard', async () => {
   const exec = fakeExec({ code: 1, stderr: 'boom' }, envelope(JSON.stringify(GOOD)));
-  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, exec });
+  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: TOOLS, exec });
   assert.strictEqual(r.ok, true, r.reason);
   assert.strictEqual(exec.calls.length, 2);
 });
@@ -135,7 +136,7 @@ section('schema validation stands between the agent and ok');
 t('well formed JSON of the wrong shape is rejected, not returned', async () => {
   const wrong = envelope(JSON.stringify({ verdict: 'exploitable', severity: 'critical' }));
   const exec = fakeExec(wrong, wrong);
-  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, exec });
+  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: TOOLS, exec });
   assert.strictEqual(r.ok, false);
   assert.match(r.reason, /schema:/);
   assert.strictEqual(r.data, undefined, 'a schema failure must not leak data');
@@ -145,14 +146,14 @@ t('a severity on a not_exploitable verdict is rejected', async () => {
   // The rule the schema exists to hold: only exploitable carries a severity.
   const sneaky = envelope(JSON.stringify({ ...GOOD, severity: 'high' }));
   const exec = fakeExec(sneaky, sneaky);
-  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, exec });
+  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: TOOLS, exec });
   assert.strictEqual(r.ok, false);
   assert.match(r.reason, /schema:/);
 });
 
 t('schema-invalid then valid returns the valid one', async () => {
   const exec = fakeExec(envelope('{"verdict":"nope"}'), envelope(JSON.stringify(GOOD)));
-  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, exec });
+  const r = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: TOOLS, exec });
   assert.strictEqual(r.ok, true, r.reason);
   assert.strictEqual(exec.calls.length, 2);
 });
@@ -160,19 +161,19 @@ t('schema-invalid then valid returns the valid one', async () => {
 t('the fix pointer validates a fix envelope and rejects a triage one', async () => {
   const fix = { outcome: 'cannot_fix', reason: 'the contract cannot be met here' };
   const okExec = fakeExec(envelope(JSON.stringify(fix)));
-  const good = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: '#/$defs/fix', exec: okExec });
+  const good = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: '#/$defs/fix', tools: TOOLS, exec: okExec });
   assert.strictEqual(good.ok, true, good.reason);
 
   const mixed = envelope(JSON.stringify(GOOD));
   const badExec = fakeExec(mixed, mixed);
-  const bad = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: '#/$defs/fix', exec: badExec });
+  const bad = await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: '#/$defs/fix', tools: TOOLS, exec: badExec });
   assert.strictEqual(bad.ok, false, 'a triage result must not pass as a fix');
 });
 
 t('a caller that names no schema is refused outright', async () => {
   const exec = fakeExec(envelope(JSON.stringify(GOOD)));
   await assert.rejects(
-    () => runAgent({ prompt: 'p', exec }),
+    () => runAgent({ prompt: 'p', tools: TOOLS, exec }),
     /schemaPath/,
     'an unvalidated result is not a result',
   );
@@ -184,7 +185,7 @@ section('timeout is a failure, not a hang');
 t('a timed out call fails and is not re-asked', async () => {
   const exec = fakeExec({ timedOut: true, stdout: '' }, envelope(JSON.stringify(GOOD)));
   const r = await runAgent({
-    prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, timeoutMs: 1500, exec,
+    prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: TOOLS, timeoutMs: 1500, exec,
   });
   assert.strictEqual(r.ok, false);
   assert.match(r.reason, /timed out after 1500ms/);
@@ -194,7 +195,7 @@ t('a timed out call fails and is not re-asked', async () => {
 
 t('the default budget is 300000ms and cwd reaches the runner', async () => {
   const exec = fakeExec(envelope(JSON.stringify(GOOD)));
-  await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, cwd: '/tmp', exec });
+  await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: TOOLS, cwd: '/tmp', exec });
   assert.strictEqual(exec.calls[0].timeoutMs, 300000);
   assert.strictEqual(exec.calls[0].cwd, '/tmp');
 });
@@ -225,14 +226,28 @@ t('realExec kills the whole process group, not just the child it spawned', async
 
 section('argv and extraction');
 
-t('the prompt is an argument, json is requested, allowed tools go last', () => {
-  const argv = argvFor({ prompt: 'hello', model: 'opus', allowedTools: ['Read', 'Grep'] });
+t('every call is confined: the role\'s tools only, no MCP, dontAsk, file tools held to the cwd, allowed tools last', () => {
+  const argv = argvFor({ prompt: 'hello', model: 'opus', tools: ['Read', 'Grep'] });
   assert.deepStrictEqual(argv, [
-    '-p', 'hello', '--output-format', 'json', '--model', 'opus', '--allowed-tools', 'Read', 'Grep',
+    '-p', 'hello', '--output-format', 'json',
+    '--setting-sources', 'user', '--settings', '{"disableAllHooks":true}',
+    '--restricted', '--strict-mcp-config', '--permission-mode', 'dontAsk',
+    '--tools', 'Read,Grep',
+    '--model', 'opus', '--allowed-tools', 'Read', 'Grep',
   ]);
   const last = argv.indexOf('--allowed-tools');
   assert.ok(argv.slice(last + 1).every((a) => !a.startsWith('--')), 'a variadic flag must end the argv');
-  assert.deepStrictEqual(argvFor({ prompt: 'hello' }), ['-p', 'hello', '--output-format', 'json']);
+  assert.deepStrictEqual(argvFor({ prompt: 'hello', tools: ['Read'] }).slice(-4),
+    ['--tools', 'Read', '--allowed-tools', 'Read']);
+});
+
+t('a call with no tool list is refused before the CLI runs, because the default set has a shell', async () => {
+  const exec = fakeExec();
+  await assert.rejects(runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, exec }),
+    /runAgent needs tools/);
+  await assert.rejects(runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: [], exec }),
+    /runAgent needs tools/);
+  assert.strictEqual(exec.calls.length, 0);
 });
 
 t('extraction takes the outermost object, not the first closing brace', () => {

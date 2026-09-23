@@ -268,6 +268,12 @@ t('a missing witness file fails when the tier requires one', () => {
   assert.ok(r.violations.some((v) => v.kind === 'witness_missing'));
 });
 
+t('a dynamic witness needs no witness file, because the attack lives in the contract', () => {
+  const r = guardDiff(diff('src/routes/admin.js', [], ['  const x = 1;']),
+    { ...contract, witness: { tier: 'dynamic' } }, { sinkFiles: ['src/routes/admin.js'] });
+  assert.ok(!r.violations.some((v) => v.kind === 'witness_missing'));
+});
+
 t('glob scope handles ** and single-segment *', () => {
   assert.ok(inScope('src/a/b/c.js', ['src/**']));
   assert.ok(!inScope('lib/a.js', ['src/**']));
@@ -338,6 +344,20 @@ t('the filter does not swallow ordinary security prose', () => {
   }
 });
 
+t('a merged multi-run SARIF points each result at its own run', () => {
+  const two = { ...raw.codeql, runs: [{ ...raw.codeql.runs[0], results: [] }, raw.codeql.runs[0]] };
+  const ptrs = normalize({ codeql: two }, repo, 'run-test').findings
+    .flatMap((f) => f.sites.flatMap((s) => s.observations)).map((o) => o.raw_pointer);
+  assert.ok(ptrs.length > 0, 'the fixture must produce CodeQL observations');
+  assert.deepStrictEqual(ptrs.filter((p) => !p.startsWith('codeql.sarif#/runs/1/results/')), []);
+});
+
+t("Semgrep's placeholder fingerprint is not stored", () => {
+  const sg = findings.flatMap((f) => f.sites.flatMap((s) => s.observations)).filter((o) => o.scanner === 'semgrep');
+  assert.ok(sg.length > 0);
+  assert.deepStrictEqual([...new Set(sg.map((o) => o.native_fingerprint))], [null]);
+});
+
 section('stage: one definition of where a record is');
 
 const base = { disposition: null, triage: null, gate: null, patches: [] };
@@ -345,26 +365,44 @@ const triaged = { verdict: 'exploitable' };
 const allPass = Object.fromEntries(OBLIGATIONS.map((o) => [o, { status: 'pass' }]));
 
 t('stage is derived from shape, in order', () => {
-  assert.strictEqual(stageOf(base), 'triage');
-  assert.strictEqual(stageOf({ ...base, triage: triaged }), 'gate');
-  assert.strictEqual(stageOf({ ...base, triage: triaged, gate: { action: 'fix' } }), 'fix');
+  assert.strictEqual(stageOf(base, 'cheap'), 'triage');
+  assert.strictEqual(stageOf({ ...base, triage: triaged }, 'cheap'), 'gate');
+  assert.strictEqual(stageOf({ ...base, triage: triaged, gate: { action: 'fix' } }, 'cheap'), 'fix');
   assert.strictEqual(
-    stageOf({ ...base, triage: triaged, gate: { action: 'report_only' } }), 'report');
-  assert.strictEqual(stageOf({ ...base, disposition: { kind: 'fixed' } }), 'done');
+    stageOf({ ...base, triage: triaged, gate: { action: 'report_only' } }, 'cheap'), 'report');
+  assert.strictEqual(stageOf({ ...base, disposition: { state: 'fixed' } }, 'cheap'), 'done');
 });
 
 t('an unverified patch is at verify, a failed first attempt goes back to fix', () => {
   const fixing = { ...base, triage: triaged, gate: { action: 'fix' } };
-  assert.strictEqual(stageOf({ ...fixing, patches: [{}] }), 'verify');
+  assert.strictEqual(stageOf({ ...fixing, patches: [{}] }, 'full'), 'verify');
   const failed = { verification: { ...allPass, functional_control: { status: 'fail' } } };
-  assert.strictEqual(stageOf({ ...fixing, patches: [failed] }), 'fix');
-  assert.strictEqual(stageOf({ ...fixing, patches: [failed, failed] }), 'report');
+  assert.strictEqual(stageOf({ ...fixing, patches: [failed] }, 'full'), 'fix');
+  assert.strictEqual(stageOf({ ...fixing, patches: [failed, failed] }, 'full'), 'report');
 });
 
 t('a verified patch reaches report', () => {
   assert.strictEqual(
     stageOf({ ...base, triage: triaged, gate: { action: 'fix' },
-              patches: [{ verification: allPass }] }), 'report');
+              patches: [{ verification: allPass }] }, 'full'), 'report');
+});
+
+t('stageOf judges one patch with the obligations of the run level', () => {
+  const fixing = { ...base, triage: triaged, gate: { action: 'fix' } };
+  const cheapPass = { frozen_target: { status: 'pass' }, deterministic_guard: { status: 'pass' },
+    regression_suite: { status: 'unavailable' }, no_new_findings: { status: 'pass' } };
+  const one = (verification) => ({ ...fixing, patches: [{ verification }] });
+  assert.strictEqual(stageOf(one({}), 'none'), 'report');
+  assert.strictEqual(stageOf(one({}), 'cheap'), 'fix');
+  assert.strictEqual(stageOf(one(cheapPass), 'cheap'), 'report');
+  assert.strictEqual(stageOf(one(cheapPass), 'full'), 'fix');
+  assert.strictEqual(stageOf(one(allPass), 'full'), 'report');
+  assert.strictEqual(stageOf(one({ ...cheapPass, no_new_findings: { status: 'fail' } }), 'cheap'), 'fix');
+});
+
+t('stageOf refuses a missing or unknown level instead of judging at full', () => {
+  assert.throws(() => stageOf(base), /unknown verify level: undefined/);
+  assert.throws(() => stageOf(base, 'toString'), /unknown verify level: toString/);
 });
 
 t('verified requires all seven obligations', () => {
@@ -385,11 +423,13 @@ t('a missing obligation is not a pass', () => {
   assert.deepStrictEqual(r.missing, ['hostile_auditor']);
 });
 
-t('a red suite on base is unavailable, not a failure, and only for regression', () => {
+t('a red suite on base or a rescan that could not run is excused, and nothing else is', () => {
   const red = { ...allPass, regression_suite: { status: 'unavailable' } };
   const r = evaluateVerification(red);
   assert.strictEqual(r.verified, true);
   assert.deepStrictEqual(r.unavailable, ['regression_suite']);
+  const quiet = { ...allPass, no_new_findings: { status: 'unavailable' } };
+  assert.deepStrictEqual(evaluateVerification(quiet).unavailable, ['no_new_findings']);
   const other = { ...allPass, hostile_auditor: { status: 'unavailable' } };
   assert.strictEqual(evaluateVerification(other).verified, false);
 });
@@ -402,6 +442,33 @@ t('a quiet rescan cannot reach the verdict', () => {
   const noisy = { ...allPass, rescan: { original_absent: false }, original_absent: false };
   assert.strictEqual(evaluateVerification(noisy).verified, true,
     'a still-firing rule must not sink an otherwise verified fix');
+});
+
+t('at the argued tier the witness pair may be unavailable, and at no other tier', () => {
+  const pair = { ...allPass, differential_witness: { status: 'unavailable' },
+    functional_control: { status: 'unavailable' } };
+  assert.deepStrictEqual(evaluateVerification(pair, OBLIGATIONS, 'argued'), {
+    verified: true, failed: [], unavailable: ['differential_witness', 'functional_control'],
+    missing: [], skipped: [],
+  });
+  assert.deepStrictEqual(evaluateVerification(pair, OBLIGATIONS, 'dynamic').failed,
+    ['differential_witness', 'functional_control']);
+  assert.deepStrictEqual(evaluateVerification(pair).failed,
+    ['differential_witness', 'functional_control']);
+  assert.strictEqual(
+    evaluateVerification({ ...pair, hostile_auditor: { status: 'unavailable' } }, OBLIGATIONS, 'argued').verified,
+    false);
+});
+
+t('at full, an argued patch with its pair excused reaches report, and a dynamic one goes back to fix', () => {
+  const withTier = (tier) => ({ ...base,
+    triage: { verdict: 'exploitable', contract: { witness: { tier } } },
+    gate: { action: 'fix' },
+    patches: [{ verification: { ...allPass, differential_witness: { status: 'unavailable' },
+      functional_control: { status: 'unavailable' } } }],
+  });
+  assert.strictEqual(stageOf(withTier('argued'), 'full'), 'report');
+  assert.strictEqual(stageOf(withTier('dynamic'), 'full'), 'fix');
 });
 
 section('audit: cross-field rules the schema now enforces');

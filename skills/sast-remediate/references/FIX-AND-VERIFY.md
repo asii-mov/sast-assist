@@ -8,18 +8,20 @@ protocol. Splitting them would repeat the same invariants across two documents.
 One git worktree and one branch per finding, `sast-fix/<run-id>/<id>/<attempt>`, all off the same base
 commit. The operator's working tree is never touched. Rollback is declining to cherry-pick.
 
+Worktrees live under `$XDG_CACHE_HOME/sast-remediate/worktrees/<hash>/`, `~/.cache` when the
+variable is unset, where the hash is taken from the output directory. Never inside the output
+directory: its `findings/` and `scans/` name the rule the fixer is never shown.
+
+Before an attempt creates its branch, `clearAttempt` removes any branch or worktree of the same
+name. Only a run that died before saving that attempt leaves one behind, and no record holds its
+work, so the attempt starts again from base. A fixer call that returns no usable answer records
+no attempt at all. Its branch is removed, the finding stays open, and the next run tries again.
+
 At most two attempts. There is no attempt three, and the cap is in the type. Attempt two receives
 the typed failures from attempt one, never a bare "try again."
 
-Findings are partitioned into conflict-free waves before anyone is spawned. Two findings conflict
-when they share a file and their line ranges fall within twenty lines. Connected findings land in
-different waves. It is never an agent's job to notice it is about to collide.
-
-`bin/partition.cjs` computes this. `partition(findings)` returns waves by deterministic greedy
-colouring over `order()`, so the assignment is stable run to run.
-
-Wave N branches off base. Wave N+1 branches off the integration tip after wave N's verified fixes
-are picked.
+Findings are fixed one at a time in `order()` from `bin/gate.cjs`. Every branch starts at base, so
+two fixes never see each other's edits.
 
 ## The fixer
 
@@ -28,7 +30,11 @@ enclosing excerpt. The repository's build, test and lint commands. On attempt tw
 verification failures.
 
 **Never receives.** A rule id. A scanner name. A scanner message. Any observation. The triage
-agent's impact or likelihood prose. Any scanner tool access.
+agent's impact or likelihood prose. A shell. Its tools are Read, Grep, Glob, Edit and Write. The
+harness builds, tests and rescans after the fixer returns, and a shell narrowed to the test
+command is no boundary when the fixer can edit the script that command runs. It does see
+repository source, which may name a scanner (a workflow, a docs folder); only this finding's own
+rule id, fingerprint and message are refused there.
 
 You cannot game a matcher you were never shown. An agent told that a particular rule fires at a
 particular line has an obvious cheapest path, which is to make that line stop matching. An agent
@@ -47,7 +53,33 @@ can decline before any patch exists. That checkpoint is the reason triage and fi
 agents, and a merged agent cannot produce it. An agent that just wrote "verdict: exploitable" will
 not conclude two steps later that it is unsure.
 
-The fixer commits to its own branch, including the witness file.
+The fixer does not commit. It lists every file it changed or created, the witness file included,
+in `declared_files`. The harness resets the worktree index to base, stages only those files, runs
+the deterministic guard on that diff, and makes the commit itself when the guard passes. A file
+the fixer left undeclared never reaches the branch, and neither does a file a hook or tool wrote
+during the call. A fixer that commits anyway is harmless, because the reset undoes its commit and
+keeps its edits. A commit the harness cannot make ends the finding `fix_failed`.
+
+## Agent isolation
+
+Every agent call runs `claude -p` with `--setting-sources user --settings '{"disableAllHooks":true}'`.
+The triage and audit calls run inside the target and the fixer inside a worktree of it, so without
+these flags the target's `CLAUDE.md`, its `.claude/settings.json` hooks and permissions, and the
+operator's plugin hooks all apply. A probe on claude 2.1.280 measured the difference. With the
+flags, a canary word in a project `CLAUDE.md` did not reach the answer and no project hook fired.
+Without them, the canary came back and three hooks fired. `--bare` would also isolate, but it
+never reads the keychain login.
+
+Every call also passes `--restricted --strict-mcp-config --permission-mode dontAsk` and `--tools`
+with the role's list. `--allowed-tools` alone only pre-approves, and under the operator's `auto`
+mode it did not keep Bash out: the probe's control call ran the flags above without `--restricted`
+and `--tools`, and its `init.tools` came back with `"Bash"` present alongside 68 MCP tools. With
+the full flag set, the probe's confined call saw `init.mcp_servers: 0`, no shell in `init.tools`
+(`["Edit","Glob","Grep","Read","Write"]`), and a file outside the cwd went unread. `--restricted`
+ignores user settings files, so the operator's default model does not apply to agents; pass
+`--model` to set one. Measured on claude 2.1.280 in `.work/probe/sandbox.txt`.
+
+Role tools: triage and the auditor get Read, Grep and Glob; the fixer adds Edit and Write.
 
 ## The witness
 
@@ -66,11 +98,12 @@ Until they land, a run either opts into `dynamic` or degrades to `argued`.
 `executable` will use the project's own test harness against the public entrypoint named in the
 contract, and becomes the tier selected automatically once it exists.
 
-`dynamic` drives the running application over its real network interface. It is built and proven
-but not enabled by default, because it needs an app that boots cold with no network and no real
-credentials, and fixture data the repository may not have yet. See `DYNAMIC-WITNESS.md` for the
-mechanics and `design/FUTURE-IMPROVEMENTS.md` for what to settle before turning it on. `structural` is a narrow rule the triage agent authors that
-restates its own invariant. `argued` means no mechanical witness exists.
+`dynamic` drives the running application over its real network interface. It runs when the
+operator passes `--witness=dynamic` and `discoverAppHarness` finds a harness in the target;
+otherwise triage is offered `argued` only. See `DYNAMIC-WITNESS.md` for the mechanics and
+`design/FUTURE-IMPROVEMENTS.md` for what to settle before turning it on by default. `structural`
+is a narrow rule the triage agent authors that restates its own invariant. `argued` means no
+mechanical witness exists.
 
 Three properties make a witness non-gameable.
 
@@ -92,8 +125,10 @@ on the buggy code and not on the patched code without the patch changing anythin
 is the definition of having changed something relevant. The auditor also reads the rule against
 the frozen invariant and rejects one narrower than the invariant.
 
-`argued` can never reach `verified`. It reaches `fixed_unwitnessed` and always needs human review,
-so a fallback is visible in the report rather than absorbed into the aggregate.
+`argued` can never reach `verified`. At every level it lands `fixed_unwitnessed`; at `full` that
+means obligations 3 and 4 are recorded unavailable with the obstacle, while the regression suite,
+the rescan and the auditor still have to pass. A fallback is visible in the report rather than
+absorbed into the aggregate.
 
 ## The functional control
 
@@ -141,8 +176,15 @@ attempt two gets a real explanation.
 5. **Control.** Must pass on both trees.
 6. **Regression.** The project's suite on the patch branch. A suite already red on base yields
    `unavailable` with reason `suite_red_on_base` rather than blaming the patch.
-7. **Rescan.** Compute `new_findings` against base. Record `original_absent` for the report.
+7. **Rescan.** Rerun the scanners whose output made the baseline, and no others, with the run's
+   recorded scanner configuration. A result is in `new_findings` only when base had no hit of
+   the same rule in the same file. Record
+   `original_absent` for the report. A rescan that produces no output is `unavailable`.
 8. **Audit.** A fresh agent that neither triaged nor fixed this finding.
+
+For `dynamic`, steps 3 to 5 are the four-step run described in `DYNAMIC-WITNESS.md`, answered by
+`witnessObligations` in `bin/witness-run.cjs` in one call: control on base, attack on base, attack
+on head, control on head.
 
 ## What "verified" means
 
@@ -155,7 +197,22 @@ and a correct fix gets rejected, the agent retries, and the cheapest edit that p
 two is the pattern-defeat this whole design exists to prevent. A gate that creates pressure
 toward the behavior it forbids is worse than no gate.
 
-Only `rescan_new`, findings the patch introduced, is a failure.
+Only `rescan_new`, findings the patch introduced, is a failure. "Introduced" means a rule firing
+in a file where base never saw it fire. Finding ids hash the sink line, so an id comparison
+counted a correct containment check that rewrote the flagged line as a new finding, and the
+retry it forced shipped a weaker fix that dodged the rule's shape. The known blind spot: a patch
+that adds a second hit of a rule already present in the same file passes the rescan unseen.
+
+## Why `executable` is not built
+
+Three reasons, not one. First, the witness file would be written by the fixer during the fix, which
+breaks the first non-gameable property above (authored before the fix exists): a fixer can write a
+test that imports something only the patch adds, so it fails on base and passes on the patch,
+looking exactly like a valid differential. Second, telling "assertion failed" apart from "crashed
+because it needs new code" (the vacuity check above) requires parsing each framework's own result
+format, TAP, pytest, go test; exit codes alone cannot do it. Third, done with exit codes anyway,
+the tier would label a gamed fix `fixed` instead of `fixed_unwitnessed`, which is worse than not
+having the tier at all.
 
 ## Integration
 

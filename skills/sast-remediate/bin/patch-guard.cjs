@@ -28,6 +28,10 @@ const SKIP_TOKEN = /\b(it|test|describe|context)\.(skip|todo)\b|\bxit\b|\bxdescr
 
 const ENFORCE_HINT = /\b(validate|valid|sanitiz|escape|allowlist|whitelist|allowed|permit|authoriz|authenticate|verify|check|assert|encode|parameteriz|bind|prepare|normaliz|resolve|realpath|clamp|limit)\w*/i;
 
+// Only these tiers ask the fixer to commit a witness file. A dynamic witness is an HTTP
+// exchange stored in the contract, not a file, so it has nothing here to be missing.
+const WITNESS_FILE_TIERS = new Set(['executable', 'structural']);
+
 function parseDiff(text) {
   const files = [];
   let cur = null;
@@ -143,7 +147,7 @@ function guardDiff(diffText, contract, opts = {}) {
   }
 
   const tier = contract && contract.witness && contract.witness.tier;
-  if (tier && tier !== 'argued' && opts.requireWitnessFile !== false) {
+  if (WITNESS_FILE_TIERS.has(tier) && opts.requireWitnessFile !== false) {
     if (!touched.some((p) => TEST_PATH.test(p) || /\.(ya?ml)$/.test(p))) {
       add('witness_missing', { expected_tier: tier });
     }

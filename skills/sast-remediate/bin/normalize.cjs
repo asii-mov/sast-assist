@@ -149,7 +149,8 @@ function fromSemgrep(json, repo) {
         scanner: 'semgrep',
         rule_id: r.check_id,
         rule_name: (m.shortlink ? String(m.shortlink) : null),
-        native_fingerprint: e.fingerprint || null,
+        // Semgrep OSS writes this placeholder for every result; it identifies nothing.
+        native_fingerprint: e.fingerprint && e.fingerprint !== 'requires login' ? e.fingerprint : null,
         message: e.message || '',
         claimed: {
           kind: 'semgrep',
@@ -176,7 +177,7 @@ function fromSemgrep(json, repo) {
 // were asymmetric and one of them was invisible in the summary line.
 function fromSarif(sarif, repo, dropped) {
   const out = [];
-  for (const run of sarif.runs || []) {
+  (sarif.runs || []).forEach((run, runIdx) => {
     const driver = (run.tool && run.tool.driver) || {};
     const rules = new Map((driver.rules || []).map((r) => [r.id, r]));
     (run.results || []).forEach((r, idx) => {
@@ -229,13 +230,13 @@ function fromSarif(sarif, repo, dropped) {
           engine: driver.name && driver.semanticVersion
             ? `${driver.name}@${driver.semanticVersion}` : driver.name || null,
           suppressed_at_source: Array.isArray(r.suppressions) && r.suppressions.length > 0,
-          raw_pointer: `codeql.sarif#/runs/0/results/${idx}`,
+          raw_pointer: `codeql.sarif#/runs/${runIdx}/results/${idx}`,
           seen_in_rounds: [1],
         },
         flow,
       });
     });
-  }
+  });
   return out;
 }
 

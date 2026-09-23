@@ -17,11 +17,23 @@ const DEFAULT_TIMEOUT_MS = 300000;
 
 // --------------------------------------------------------------------- invoke
 
-function argvFor({ prompt, model, allowedTools }) {
-  const argv = ['-p', prompt, '--output-format', 'json'];
+// Agents run inside the target, so without these flags the target's CLAUDE.md, its settings
+// hooks and the operator's plugin hooks all apply to the call. Measured on claude 2.1.280 in
+// .work/probe/isolation.txt. --bare would also isolate, but it never reads the keychain login.
+const ISOLATION = ['--setting-sources', 'user', '--settings', '{"disableAllHooks":true}'];
+
+// --allowed-tools only pre-approves; the tool set and the permission mode decide the rest, and the
+// operator's mode was `auto`. So the set is named with --tools, anything unlisted is refused by
+// dontAsk, MCP servers are dropped, and --restricted holds file tools to the cwd. Measured on
+// claude 2.1.280 in .work/probe/sandbox.txt.
+const CONFINEMENT = ['--restricted', '--strict-mcp-config', '--permission-mode', 'dontAsk'];
+
+function argvFor({ prompt, model, tools }) {
+  const argv = ['-p', prompt, '--output-format', 'json', ...ISOLATION, ...CONFINEMENT,
+    '--tools', tools.join(',')];
   if (model) argv.push('--model', model);
   // Variadic on the CLI side, so it goes last or it swallows whatever follows it.
-  if (allowedTools && allowedTools.length) argv.push('--allowed-tools', ...allowedTools);
+  argv.push('--allowed-tools', ...tools);
   return argv;
 }
 
@@ -142,6 +154,9 @@ async function runAgent(opts) {
   if (!opts.schemaPath || !opts.schemaPointer) {
     throw new Error('runAgent needs schemaPath and schemaPointer: an unvalidated result is not a result');
   }
+  if (!Array.isArray(opts.tools) || opts.tools.length === 0) {
+    throw new Error('runAgent needs tools: without --tools the CLI default set includes a shell');
+  }
   const exec = opts.exec || realExec;
 
   const first = await attempt(opts, exec);
@@ -163,7 +178,7 @@ if (require.main === module) {
     console.error('usage: agent.cjs <schema.json> <#/$defs/name> <prompt>');
     process.exit(2);
   }
-  runAgent({ prompt, schemaPath, schemaPointer: pointer }).then((r) => {
+  runAgent({ prompt, schemaPath, schemaPointer: pointer, tools: ['Read', 'Grep', 'Glob'] }).then((r) => {
     console.log(JSON.stringify(r, null, 2));
     process.exit(r.ok ? 0 : 1);
   });

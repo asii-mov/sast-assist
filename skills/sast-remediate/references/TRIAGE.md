@@ -10,7 +10,8 @@ The agent that triages never fixes. The agent that fixes never audits.
 
 Exactly one JSON object matching the `triage` branch of `schema/agent-results.schema.json`,
 with no surrounding prose. Malformed or prose-wrapped output is discarded whole, never repaired.
-Re-run once with a fresh agent, then defer.
+Re-run once with a fresh agent, then leave the finding open. The run ends `incomplete` and the
+next run asks again.
 
 Three verdicts, and the third is the one that makes this work.
 
@@ -117,9 +118,10 @@ Overall severity never exceeds demonstrated impact.
 This is the deliverable. Everything downstream reads it and nothing downstream re-derives it.
 
 **`invariant`.** The property that must hold, stated about values and boundaries. Never about
-rules. The schema rejects any mention of a rule id, a scanner name, or the words warning,
-finding, or alert, because the fixer is never shown the rule and the contract must not leak it
-back in.
+rules. The schema rejects any mention of a scanner name, scanner-artifact vocabulary such as
+"suppress" or "false positive", and anything shaped like a rule id, because the fixer is never
+shown the rule and the contract must not leak it back in. Ordinary words like warning or alert,
+and property chains like `req.params.user.id`, are fine.
 
 Good: "every string reaching the first argument of the process spawn in `ping` is an element of
 the fixed `ALLOWED_HOSTS` list, and user input may only select an index into it."
@@ -132,9 +134,10 @@ Rejected: "the `js/command-line-injection` finding at line 6 must stop firing."
 than the nearest place a patch would compile. The right place is frequently upstream of the sink
 the scanner flagged.
 
-**`witness`.** The strongest tier the repo supports. See `FIX-AND-VERIFY.md` and
-`DYNAMIC-WITNESS.md`. Author it now, before any fix exists. That is what makes the pre-patch run
-expressible, because by construction it only touches API that already exists on the base commit.
+**`witness`.** The strongest tier the repo supports, chosen from the enabled witness tiers listed
+under Repository facts. See `FIX-AND-VERIFY.md` and `DYNAMIC-WITNESS.md`. Author it now, before
+any fix exists. That is what makes the pre-patch run expressible, because by construction it only
+touches API that already exists on the base commit.
 
 **`writable_scope`.** Globs the fixer may modify. Anything else it touches is a guard violation.
 
