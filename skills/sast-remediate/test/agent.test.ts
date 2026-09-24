@@ -8,7 +8,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import assert from 'assert';
-import { runAgent, realExec, argvFor, extractJson } from '../bin/agent.ts';
+import { runAgent, realExec, argvFor, extractJson, envFor } from '../bin/agent.ts';
 import type { AgentResult, ExecResult } from '../bin/agent.ts';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
@@ -27,7 +27,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const fakeExec = (...runs: Partial<ExecResult>[]) => {
   const queue = [...runs];
   const calls: Record<string, unknown>[] = [];
-  const exec = async (argv: string[], opts: { cwd?: string; timeoutMs: number }): Promise<ExecResult> => {
+  const exec = async (argv: string[], opts: { cwd?: string; timeoutMs: number; env?: NodeJS.ProcessEnv }): Promise<ExecResult> => {
     calls.push({ argv, ...opts });
     if (!queue.length) throw new Error(`exec called ${calls.length} times, test queued ${runs.length}`);
     return { code: 0, stdout: '', stderr: '', timedOut: false, ...queue.shift() };
@@ -243,6 +243,42 @@ t('every call is confined: the role\'s tools only, no MCP, dontAsk, file tools h
   assert.ok(argv.slice(last + 1).every((a) => !a.startsWith('--')), 'a variadic flag must end the argv');
   assert.deepStrictEqual(argvFor({ prompt: 'hello', tools: ['Read'] }).slice(-4),
     ['--tools', 'Read', '--allowed-tools', 'Read']);
+});
+
+section('provider');
+
+t('anthropic leaves the environment as it is', () => {
+  const env = { ANTHROPIC_API_KEY: 'placeholder-anthropic' };
+  assert.strictEqual(envFor('anthropic', env), env);
+  assert.strictEqual(envFor(undefined, env), env);
+});
+
+t('openrouter points the CLI at OpenRouter with its key and blanks the Anthropic key', () => {
+  const env = envFor('openrouter', { OPENROUTER_API_KEY: 'placeholder-or', ANTHROPIC_API_KEY: 'placeholder-anthropic', PATH: '/bin' });
+  assert.strictEqual(env.ANTHROPIC_BASE_URL, 'https://openrouter.ai/api');
+  assert.strictEqual(env.ANTHROPIC_AUTH_TOKEN, 'placeholder-or');
+  assert.strictEqual(env.ANTHROPIC_API_KEY, '');
+  assert.strictEqual(env.PATH, '/bin');
+});
+
+t('openrouter without a key is refused rather than sent unauthenticated', () => {
+  assert.throws(() => envFor('openrouter', {}), /OPENROUTER_API_KEY/);
+});
+
+t('the key reaches the CLI through its environment, never its argv', async () => {
+  const saved = process.env.OPENROUTER_API_KEY;
+  process.env.OPENROUTER_API_KEY = 'placeholder-or';
+  try {
+    const exec = fakeExec(envelope(JSON.stringify(GOOD)));
+    await runAgent({ prompt: 'p', schemaPath: SCHEMA, schemaPointer: TRIAGE, tools: TOOLS,
+      provider: 'openrouter', model: 'openai/gpt-5', exec });
+    const call = exec.calls[0] as { argv: string[]; env: NodeJS.ProcessEnv };
+    assert.strictEqual(call.env.ANTHROPIC_AUTH_TOKEN, 'placeholder-or');
+    assert.ok(!call.argv.includes('placeholder-or'));
+    assert.deepStrictEqual(call.argv.slice(call.argv.indexOf('--model'), call.argv.indexOf('--model') + 2), ['--model', 'openai/gpt-5']);
+  } finally {
+    if (saved === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = saved;
+  }
 });
 
 t('a call with no tool list is refused before the CLI runs, because the default set has a shell', async () => {

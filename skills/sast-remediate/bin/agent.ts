@@ -14,6 +14,24 @@ import { validate } from './validate.ts';
 const CLI = 'claude';
 const DEFAULT_TIMEOUT_MS = 300000;
 
+// ------------------------------------------------------------------- provider
+
+// Which API the CLI talks to. OpenRouter serves an Anthropic-compatible endpoint, so the same CLI
+// and the same confinement run against any model it lists, named with --model by its OpenRouter
+// slug (e.g. openai/gpt-5). Models outside Anthropic's may follow the tool protocol less well.
+const PROVIDERS = ['anthropic', 'openrouter'] as const;
+type Provider = typeof PROVIDERS[number];
+const isProvider = (p: unknown): p is Provider => PROVIDERS.includes(p as Provider);
+
+// The key travels in the child's environment, never its argv, where `ps` would show it.
+// ANTHROPIC_API_KEY is blanked so an operator's Anthropic key cannot win over the OpenRouter one.
+function envFor(provider: Provider = 'anthropic', env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  if (provider === 'anthropic') return env;
+  const key = env.OPENROUTER_API_KEY;
+  if (!key) throw new Error('--provider=openrouter needs OPENROUTER_API_KEY in the environment');
+  return { ...env, ANTHROPIC_BASE_URL: 'https://openrouter.ai/api', ANTHROPIC_AUTH_TOKEN: key, ANTHROPIC_API_KEY: '' };
+}
+
 // --------------------------------------------------------------------- invoke
 
 // Agents run inside the target, so without these flags the target's CLAUDE.md, its settings
@@ -39,20 +57,20 @@ function argvFor({ prompt, model, tools }: { prompt: string; model?: string | nu
 // The injectable seam. `exec(argv, {cwd, timeoutMs}) -> {code, stdout, stderr, timedOut}`.
 // Tests pass their own; nothing else in the skill spawns a model.
 type ExecResult = { code: number | null; stdout: string; stderr: string; timedOut: boolean };
-type ExecFn = (argv: string[], o: { cwd?: string; timeoutMs: number }) => Promise<ExecResult>;
+type ExecFn = (argv: string[], o: { cwd?: string; timeoutMs: number; env?: NodeJS.ProcessEnv }) => Promise<ExecResult>;
 type AgentOpts = {
   prompt: string; schemaPath: string; schemaPointer: string; tools: string[];
-  cwd?: string; model?: string | null; timeoutMs?: number; exec?: ExecFn;
+  cwd?: string; model?: string | null; provider?: Provider; timeoutMs?: number; exec?: ExecFn;
 };
 // `data` has passed the schema at schemaPointer; the caller knows which shape that is.
 type AgentResult = { ok: true; data: unknown } | { ok: false; reason: string; raw: string };
 type Attempt = AgentResult | { ok: false; reason: string; raw: string; spent: true };
 
-function realExec(argv: string[], { cwd, timeoutMs, command = CLI }: { cwd?: string; timeoutMs?: number; command?: string } = {}): Promise<ExecResult> {
+function realExec(argv: string[], { cwd, timeoutMs, env, command = CLI }: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv; command?: string } = {}): Promise<ExecResult> {
   return new Promise((resolve) => {
     // detached gives the child its own process group. The CLI spawns tool subprocesses of its
     // own, and killing the parent alone leaves those holding the run open past its budget.
-    const child = spawn(command, argv, { cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    const child = spawn(command, argv, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     let stdout = '';
     let stderr = '';
     let timedOut = false;
@@ -134,7 +152,7 @@ function schemaAt(schemaPath: string, pointer: string) {
 
 async function attempt(opts: AgentOpts, exec: ExecFn): Promise<Attempt> {
   const timeoutMs = opts.timeoutMs || DEFAULT_TIMEOUT_MS;
-  const run = await exec(argvFor(opts), { cwd: opts.cwd, timeoutMs });
+  const run = await exec(argvFor(opts), { cwd: opts.cwd, timeoutMs, env: envFor(opts.provider) });
 
   // A timeout is a failure, and it is the one failure that is not re-asked: the budget it was
   // given is already spent, and spending it twice is the hang this rule exists to prevent.
@@ -182,8 +200,8 @@ async function runAgent(opts: AgentOpts): Promise<AgentResult> {
   return { ok: false, reason: `discarded twice: ${first.reason} | ${second.reason}`, raw: second.raw };
 }
 
-export type { AgentOpts, AgentResult, ExecFn, ExecResult };
-export { runAgent, realExec, argvFor, resultText, extractJson, DEFAULT_TIMEOUT_MS };
+export type { AgentOpts, AgentResult, ExecFn, ExecResult, Provider };
+export { runAgent, realExec, argvFor, resultText, extractJson, envFor, isProvider, PROVIDERS, DEFAULT_TIMEOUT_MS };
 
 if (import.meta.main) {
   const [schemaPath, pointer, ...rest] = process.argv.slice(2);

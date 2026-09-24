@@ -79,6 +79,11 @@ the full flag set, the probe's confined call saw `init.mcp_servers: 0`, no shell
 ignores user settings files, so the operator's default model does not apply to agents; pass
 `--model` to set one. Measured on claude 2.1.280 in `.work/probe/sandbox.txt`.
 
+`--provider=openrouter` changes where the CLI sends its requests, not how it is confined. The child
+process gets `ANTHROPIC_BASE_URL=https://openrouter.ai/api`, `ANTHROPIC_AUTH_TOKEN` set from
+`OPENROUTER_API_KEY`, and a blank `ANTHROPIC_API_KEY`. The key goes in the environment, never in
+argv, and the run stops before writing anything if the key is missing.
+
 Role tools: triage and the auditor get Read, Grep and Glob; the fixer adds Edit and Write.
 
 ## The witness

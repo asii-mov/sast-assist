@@ -202,6 +202,7 @@ t('defaults match the documented ones', () => {
   assert.strictEqual(o.triageOnly, false);
   assert.strictEqual(o.maxFindings, Infinity);
   assert.deepStrictEqual(o.scanConfig, { semgrep: ['p/default'], codeql_suite: 'security-extended' });
+  assert.strictEqual(o.provider, 'anthropic');
 });
 
 t('--target is required', () => {
@@ -213,6 +214,7 @@ t('an out-of-range --verify or --fix-at is refused, not silently defaulted', () 
   assert.throws(() => R.parseArgs(['--target=/x', '--fix-at=urgent']), /--fix-at must be/);
   assert.throws(() => R.parseArgs(['--target=/x', '--scanners=snyk']), /unknown scanner/);
   assert.throws(() => R.parseArgs(['--target=/x', '--max-findings=0']), /--max-findings/);
+  assert.throws(() => R.parseArgs(['--target=/x', '--provider=openai']), /--provider must be/);
 });
 
 t('an unknown flag is an error rather than an ignored typo', () => {
@@ -610,6 +612,18 @@ t('a deferred finding is picked up by the next run', async () => {
 t('every scanner failing is fatal rather than a clean report', async () => {
   const opts = baseOpts(); opts.out = path.join(tmp(), 'run-1'); opts.scans = tmp();
   await assert.rejects(R.run(opts, makeDeps()), /every requested scanner failed/);
+});
+
+t('openrouter without its key stops the run before any output is written', async () => {
+  const saved = process.env.OPENROUTER_API_KEY;
+  delete process.env.OPENROUTER_API_KEY;
+  try {
+    const opts = baseOpts({ argv: ['--provider=openrouter'] }); opts.out = path.join(tmp(), 'run-1');
+    await assert.rejects(R.run(opts, makeDeps()), /OPENROUTER_API_KEY/);
+    assert.ok(!fs.existsSync(opts.out));
+  } finally {
+    if (saved !== undefined) process.env.OPENROUTER_API_KEY = saved;
+  }
 });
 
 t('a scanner that is absent is recorded and the run continues on what is left', async () => {

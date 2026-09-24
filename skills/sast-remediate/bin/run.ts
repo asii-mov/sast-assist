@@ -25,7 +25,7 @@ import type { Disposition, Evaluation, FindingRecord, Obligation, ObligationResu
 import type { Baseline, ScanConfig, ScanDeps, ScannerStatus, SyncExec } from './scan.ts';
 import type { Policy } from './gate.ts';
 import type { AgentFailure } from './resume.ts';
-import type { AgentOpts, AgentResult } from './agent.ts';
+import type { AgentOpts, AgentResult, Provider } from './agent.ts';
 import type { AppHarness } from './app-harness.ts';
 import type { AgentAudit, AgentFix, AgentTriage, SecurityContract, Severity, TaintFlow, Witness } from '../schema/types.ts';
 
@@ -44,7 +44,7 @@ import { validate, isRecord } from './validate.ts';
 import { guardDiff } from './patch-guard.ts';
 import { defaultOutDir, readRecorded, mergeExisting, clearAttempt, incompleteReason } from './resume.ts';
 import { assertNoLeak, leakError, recordTerms, authoredProse } from './leak-guard.ts';
-import { runAgent } from './agent.ts';
+import { runAgent, envFor, isProvider, PROVIDERS } from './agent.ts';
 import { renderRemediation, renderHandoff } from './report.ts';
 import { witnessObligations } from './witness-run.ts';
 import { discoverAppHarness } from './app-harness.ts';
@@ -52,7 +52,7 @@ import { discoverAppHarness } from './app-harness.ts';
 type Opts = {
   target: string; out: string | null; fixAt: Severity; verify: VerifyLevel; witness: 'dynamic' | null;
   scanners: string[]; scans: string | null; triageOnly: boolean; maxFindings: number;
-  model: string | null; dryRun: boolean; timeoutMs: number; scanConfig: ScanConfig;
+  model: string | null; provider: Provider; dryRun: boolean; timeoutMs: number; scanConfig: ScanConfig;
 };
 type Deps = ScanDeps & {
   onPath: (bin: string) => boolean;
@@ -77,7 +77,7 @@ type FixCtx = Ctx & { base: string };
 type AgentAnswer = { '#/$defs/triage': AgentTriage; '#/$defs/fix': AgentFix; '#/$defs/audit': AgentAudit };
 
 async function ask<P extends keyof AgentAnswer>(ctx: Ctx, pointer: P, o: Omit<AgentOpts, 'schemaPath' | 'schemaPointer'>) {
-  const res = await ctx.deps.runAgent({ ...o, schemaPath: AGENT_SCHEMA, schemaPointer: pointer });
+  const res = await ctx.deps.runAgent({ ...o, provider: ctx.opts.provider, schemaPath: AGENT_SCHEMA, schemaPointer: pointer });
   return res.ok ? { ok: true as const, data: res.data as AgentAnswer[P] } : res;
 }
 
@@ -114,18 +114,20 @@ const USAGE = `usage: run.ts --target=DIR [options]
   --codeql-suite=S    CodeQL suite name for the scan and every rescan (default security-extended)
   --triage-only       stop after the gate, write no patches
   --max-findings=N    bound the run; the rest become deferred, never dropped
-  --model=NAME        model for agent calls
+  --model=NAME        model for agent calls; with openrouter, its slug (e.g. openai/gpt-5)
+  --provider=P        anthropic|openrouter  (default anthropic; openrouter reads
+                      OPENROUTER_API_KEY)
   --dry-run           print the plan and exit`;
 
 class UsageError extends Error {}
 
 function parseArgs(argv: string[]): Opts {
   // Collected as written, then checked below before it becomes Opts.
-  const opts: Omit<Opts, 'target' | 'fixAt' | 'verify' | 'witness'>
-    & { target: string | null; fixAt: string; verify: string; witness: string | null } = {
+  const opts: Omit<Opts, 'target' | 'fixAt' | 'verify' | 'witness' | 'provider'>
+    & { target: string | null; fixAt: string; verify: string; witness: string | null; provider: string } = {
     target: null, out: null, fixAt: 'medium', verify: 'cheap', witness: null,
     scanners: [...SCANNERS], scans: null, triageOnly: false, maxFindings: Infinity,
-    model: null, dryRun: false, timeoutMs: 300000,
+    model: null, provider: 'anthropic', dryRun: false, timeoutMs: 300000,
     scanConfig: { semgrep: [], codeql_suite: DEFAULT_SCAN_CONFIG.codeql_suite },
   };
   for (const a of argv) {
@@ -150,16 +152,18 @@ function parseArgs(argv: string[]): Opts {
       case 'triage-only': opts.triageOnly = true; break;
       case 'max-findings': opts.maxFindings = Number(val); break;
       case 'model': opts.model = String(val); break;
+      case 'provider': opts.provider = String(val); break;
       case 'timeout-ms': opts.timeoutMs = Number(val); break;
       case 'dry-run': opts.dryRun = true; break;
       default: throw new UsageError(`unknown option: ${a}`);
     }
   }
-  const { target, fixAt, verify, witness } = opts;
+  const { target, fixAt, verify, witness, provider } = opts;
   if (!target) throw new UsageError('--target is required');
   if (!isSeverity(fixAt)) throw new UsageError(`--fix-at must be one of ${Object.keys(RANK).join('|')}`);
   if (!isVerifyLevel(verify)) throw new UsageError(`--verify must be one of ${Object.keys(VERIFY_LEVELS).join('|')}`);
   if (witness !== null && witness !== 'dynamic') throw new UsageError('--witness must be dynamic');
+  if (!isProvider(provider)) throw new UsageError(`--provider must be one of ${PROVIDERS.join('|')}`);
   for (const s of opts.scanners) if (!SCANNERS.includes(s)) throw new UsageError(`unknown scanner: ${s}`);
   if (!opts.scanners.length) throw new UsageError('--scanners must name at least one scanner');
   if (!(opts.maxFindings > 0)) throw new UsageError('--max-findings must be a positive integer');
@@ -167,7 +171,7 @@ function parseArgs(argv: string[]): Opts {
   if (!SUITE_NAME.test(opts.scanConfig.codeql_suite)) {
     throw new UsageError('--codeql-suite must be a suite name such as security-extended');
   }
-  return { ...opts, target, fixAt, verify, witness };
+  return { ...opts, target, fixAt, verify, witness, provider };
 }
 
 // ----------------------------------------------------------------------- deps
@@ -824,6 +828,7 @@ function planLines(opts: Opts, target: string, outDir: string, base: string | nu
     `scanners      ${opts.scans ? `reused from ${opts.scans}`
       : opts.scanners.map((s) => `${s}${onPath(s) ? '' : ' (absent)'}`).join(' ')}`,
     `scan config   semgrep ${opts.scanConfig.semgrep.join(' ')}; codeql ${opts.scanConfig.codeql_suite}`,
+    `agents        ${opts.provider}, model ${opts.model || 'CLI default'}`,
     `max findings  ${opts.maxFindings === Infinity ? 'unbounded' : opts.maxFindings}`,
     `test command  ${discoverTestCommand(target) || 'none discovered'}`,
     `stages        scan normalize pre-resolve triage gate${opts.triageOnly ? '' : ' fix verify'} report`,
@@ -847,6 +852,8 @@ async function run(opts: Opts, deps: Deps = realDeps()): Promise<RunResult> {
     return { dryRun: true as const, outDir, target, base };
   }
 
+  // A missing key would otherwise surface as every agent call failing, one finding at a time.
+  try { envFor(opts.provider); } catch (e) { throw new UsageError((e as Error).message); }
   ensureDir(outDir);
   const worktreeRoot = worktreeRootFor(outDir);
   fs.mkdirSync(worktreeRoot, { recursive: true, mode: 0o700 });
