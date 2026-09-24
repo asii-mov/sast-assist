@@ -1,15 +1,15 @@
 # sast-remediate
 
-Static analysis tools such as Semgrep and CodeQL flag code that looks dangerous, and many of those flags turn out to be false positives: the input is not attacker-controlled, a check earlier on the path already stops the attack, or the code never runs. sast-remediate takes the scanners' output and has an AI agent try to disprove each finding from the repository's own source. Findings it can disprove are set aside with a written reason, so a reviewer only spends time on the ones that hold up. For the findings that remain, it can also write a fix on its own branch and check it with set rules, the project's tests and a fresh scan. Those checks do not prove the attack is gone.
+Static analysis tools such as Semgrep and CodeQL flag code that looks dangerous, and many of those flags are false positives. The input may not be attacker-controlled, an earlier check may already stop the attack, or the code may never run. sast-remediate takes the scanners' output and has an AI agent try to disprove each finding from the repository's own source. The tool sets aside each finding the agent disproves and records why, so a reviewer only reads the ones that hold up. For the findings that remain, it can also write a fix on its own branch. It then checks the fix against set rules for what a fix may change, runs the project's tests and scans again. Those checks do not prove the attack is gone.
 
 ## How it works
 
-1. **Scan.** Semgrep and CodeQL run against the repository, or their existing output is reused.
-2. **Merge.** Results that point at the same flaw are folded into one finding.
-3. **Set aside by path.** Test, vendor, generated, minified and migration code is set aside by rule. This is a scope decision, not a claim that the code is safe.
-4. **Triage.** An agent tries to refute each finding. The result is a verdict of exploitable, not exploitable or undecidable, and an exploitable finding also gets a written statement of what must be true for the code to be safe.
+1. **Scan.** The tool runs Semgrep and CodeQL on the repository, or reuses their saved output.
+2. **Merge.** The tool folds results that point at the same flaw into one finding.
+3. **Set aside by path.** The tool sets aside findings in test, vendor, generated, minified and migration code. This only limits scope. It does not claim that code is safe.
+4. **Triage.** An agent tries to refute each finding. The result is a verdict of exploitable, not exploitable or undecidable, and an exploitable finding also gets a written statement of what must be true for the code to be safe. If the places in one finding need different fixes, the agent can split it instead. Each part becomes its own finding, and the agent triages it in the same run. A part that asks to split again goes to a human.
 5. **Threshold.** Plain code, with no AI involved, decides which exploitable findings are severe enough to fix (medium and above by default).
-6. **Fix and check.** A second agent writes a fix in a separate worktree. It never sees the scanner's rule or message. By default (`--verify=cheap`) the tool then checks that the security goal is unchanged, that the change does not just silence the scanner or touch files it should not, that the tests pass and that a rescan finds nothing new. The last two count as unavailable, not failed, when there is no test command or no scanner output. A fix that fails gets one more attempt.
+6. **Fix and check.** A second agent writes a fix in a separate worktree. It never sees the scanner's rule or message. By default (`--verify=cheap`) the tool then checks that the security goal is unchanged, that the change does not just silence the scanner or touch files it should not, that the tests pass and that a rescan finds nothing new. The last two count as unavailable, not failed, when there is no test command or no scanner output. If a fix fails these checks, the agent gets one more attempt.
 7. **Report.** `REMEDIATION.md` lists every finding and what happened to it. `HANDOFF.md` lists what needs a human.
 
 Each finding the run decides gets a recorded outcome and reason. A finding left open by a failed agent call or by `--max-findings` waits for the next run, and the report says which.
@@ -19,8 +19,8 @@ Each finding the run decides gets a recorded outcome and reason. A finding left 
 - Node.js 22.18 or newer. The tool is TypeScript that Node runs directly, with no build step and no dependencies.
 - Semgrep, CodeQL or both on `PATH`. Only a run with both `--scans` and `--triage-only` can do without them, because the fix stage rescans every fix.
 - The [Claude Code](https://claude.com/claude-code) CLI on `PATH` as `claude`. It runs the agents and keeps each one to the tools its role needs. The model behind it can come from either of two places:
-  - Anthropic (the default): sign in to the CLI or set `ANTHROPIC_API_KEY`.
-  - [OpenRouter](https://openrouter.ai): set `OPENROUTER_API_KEY` and pass `--provider=openrouter`. Then `--model` takes any OpenRouter model name, such as `openai/gpt-5` or `google/gemini-2.5-pro`. The CLI is tuned for Claude models, so other models may be worse at using its tools. Findings they fail to answer stay open for the next run rather than being dropped.
+  - Anthropic is the default. Sign in to the CLI or set `ANTHROPIC_API_KEY`.
+  - For [OpenRouter](https://openrouter.ai), set `OPENROUTER_API_KEY` and pass `--provider=openrouter`. Then `--model` takes any OpenRouter model name, such as `openai/gpt-5` or `google/gemini-2.5-pro`. The CLI is tuned for Claude models, so other models may be worse at using its tools. Findings they fail to answer stay open for the next run rather than being dropped.
 - The target must be a git repository for the fix stage. Triage works on any directory. The tool commits each fix under its own name, so the machine needs no git identity.
 
 ## Usage
@@ -118,7 +118,7 @@ git -C target push origin 'refs/heads/sast-fix/*:refs/heads/sast-fix/*'
 Notes for CI:
 
 - If your pipeline already runs Semgrep or CodeQL, save their output as `semgrep.json` and `codeql.sarif` and pass `--scans=DIR` to avoid scanning twice. Pass the same rules with `--semgrep-config` and `--codeql-suite`, or the rescan after each fix will count unfamiliar rules as new findings. The fix stage still needs the scanners installed for that rescan.
-- Agents run with only the tools their role needs and no shell, and the target's own Claude settings and hooks are ignored.
+- Agents get only the tools their role needs and no shell. The tool ignores the target's own Claude settings and hooks.
 - Use `--max-findings` to bound the triage time and cost of a single job.
 - To use OpenRouter in CI, set `OPENROUTER_API_KEY` from a secret in place of `ANTHROPIC_API_KEY` and add `--provider=openrouter --model=<name>` to the command.
 
