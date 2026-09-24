@@ -623,7 +623,9 @@ async function verifyPatch(f: FindingRecord, patch: Patch, ctx: FixCtx): Promise
   patch.diff_bytes = diff.length;
 
   if (!stopped && diff.trim()) {
-    const c = ctx.git(['commit', '-q', '-m', `sast-remediate: enforce the invariant for ${f.id}`], wt);
+    // Set here, not inherited, so the commit works on a CI runner with no identity and reads as the tool's.
+    const c = ctx.git(['-c', 'user.name=sast-remediate', '-c', 'user.email=sast-remediate@users.noreply.invalid',
+      'commit', '-q', '-m', `sast-remediate: enforce the invariant for ${f.id}`], wt);
     if (c.status !== 0) {
       patch.outcome = 'error';
       patch.detail = `commit_failed: ${trim(c.stderr)}`;
@@ -962,15 +964,12 @@ async function run(opts: Opts, deps: Deps = realDeps()): Promise<RunResult> {
 }
 
 async function main(argv: string[]): Promise<number> {
-  let opts: Opts;
-  try { opts = parseArgs(argv); }
+  try { await run(parseArgs(argv)); return 0; }
   catch (e) {
-    if (!(e instanceof UsageError)) throw e;
-    console.error(`${e.message}\n\n${USAGE}`);
-    return 2;
-  }
-  try { await run(opts); return 0; }
-  catch (e) {
+    if (e instanceof UsageError) {
+      console.error(`${e.message}\n\n${USAGE}`);
+      return 2;
+    }
     console.error(`run failed: ${e instanceof Error ? e.message : String(e)}`);
     return 1;
   }

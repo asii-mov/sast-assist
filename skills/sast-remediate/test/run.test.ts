@@ -122,7 +122,9 @@ function makeDeps(o: Record<string, any> = {}) {
   const exec = (cmd: string, args: string[], opt: { cwd?: string } = {}) => {
     state.execCalls.push([cmd, ...args].join(' '));
     if (cmd === 'git') {
-      const rest = args[0] === '-C' ? args.slice(2) : args;
+      let rest = args[0] === '-C' ? args.slice(2) : args;
+      const config: string[] = [];
+      while (rest[0] === '-c') { config.push(rest[1]); rest = rest.slice(2); }
       if (rest[0] === 'rev-parse') {
         return o.base === null ? { status: 1, stdout: '', stderr: 'not a git repository' } : okr('a'.repeat(40) + '\n');
       }
@@ -133,6 +135,11 @@ function makeDeps(o: Record<string, any> = {}) {
       }
       if (rest[0] === 'diff') return okr(state.diff);
       if (rest[0] === 'commit' && o.commitFails) return { status: 1, stdout: '', stderr: 'Author identity unknown' };
+      // A stock CI runner has no git identity configured, so only an explicit one lets a commit through.
+      if (rest[0] === 'commit' && o.noIdentity && !(config.some((c) => c.startsWith('user.name='))
+        && config.some((c) => c.startsWith('user.email=')))) {
+        return { status: 128, stdout: '', stderr: 'Author identity unknown' };
+      }
       return okr();
     }
     if (cmd === 'npm') return { status: state.npm(opt.cwd || ''), stdout: '', stderr: 'suite output' };
@@ -219,6 +226,13 @@ t('an out-of-range --verify or --fix-at is refused, not silently defaulted', () 
 
 t('an unknown flag is an error rather than an ignored typo', () => {
   assert.throws(() => R.parseArgs(['--target=/x', '--verfy=cheap']), /unknown option/);
+});
+
+t('a usage error raised by run, such as a missing target, exits 2 like a parse error', async () => {
+  const err = console.error;
+  console.error = () => {};
+  try { assert.strictEqual(await R.main(['--target=/nonexistent/x', `--out=${tmp()}`]), 2); }
+  finally { console.error = err; }
 });
 
 t('--witness accepts dynamic and nothing else', () => {
@@ -674,7 +688,7 @@ async function fixRun(over: Record<string, any> = {}) {
     })),
   };
   const deps = makeDeps({ agents, diff: over.diff, npm: over.npm, rescan: over.rescan, onPath: over.onPath,
-    commitFails: over.commitFails });
+    commitFails: over.commitFails, noIdentity: over.noIdentity });
   if (over.recordedLevel) {
     fs.mkdirSync(out, { recursive: true });
     fs.writeFileSync(path.join(out, 'run-metadata.json'), JSON.stringify({ verify_level: over.recordedLevel }));
@@ -834,6 +848,14 @@ t('a commit the harness cannot make ends fix_failed, with no retry', async () =>
   assert.strictEqual(f.disposition?.state, 'fix_failed');
   assert.strictEqual(settled(f, 'fix_failed').branch, null);
   assert.strictEqual(deps.state.agentCalls.filter((c) => c.schemaPointer === '#/$defs/fix').length, 3);
+});
+
+t('the fix commit carries the tool identity, so it lands on a machine with no git identity', async () => {
+  const { res, deps } = await fixRun({ noIdentity: true });
+  const f = must(res.findings.find((x) => x.id === 'f_6ed43412e0d9b09d'), 'f');
+  assert.notStrictEqual(f.patches[0].outcome, 'error', String(f.patches[0].detail));
+  const commit = must(deps.state.execCalls.find((c) => / commit /.test(c)), 'the commit call');
+  assert.ok(commit.includes('-c user.name=sast-remediate -c user.email=sast-remediate@users.noreply.invalid commit '), commit);
 });
 
 t('at cheap, the witness obligations are absent from the record, not faked', async () => {
