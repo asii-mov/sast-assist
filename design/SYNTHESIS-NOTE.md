@@ -24,9 +24,9 @@ linear-pipeline default before committing to it.
 
 | # | Shape | Distinctive contribution |
 |---|---|---|
-| 1 | `sast-remediate`, one skill; triage emits a `SecurityContract`, not a verdict | fixer structurally blind to the rule; red-green witness with vacuity detection; `stageOf()` derived; severity absent from non-exploitable branches |
+| 1 | `sast-assist`, one skill; triage emits a `SecurityContract`, not a verdict | fixer structurally blind to the rule; red-green witness with vacuity detection; `stageOf()` derived; severity absent from non-exploitable branches |
 | 2 | `sast-triage` + `sast-fix` over a deterministic CLI; `Finding` = fold over an append-only event log | `input_hash` idempotency; per-fingerprint JSONL (race-free by layout); termination proof; honest blind-spot disclosure |
-| 3 | `sast-triage` + `sast-remediate`, split on the mutation boundary | conflict-graph partitioning of parallel fixes; deterministic suppression gate before the verifier spawns |
+| 3 | `sast-triage` + `sast-assist`, split on the mutation boundary | conflict-graph partitioning of parallel fixes; deterministic suppression gate before the verifier spawns |
 | 4 | `vulnfix`, fixpoint loop over a `Case` ledger; merged resolver + hostile auditor | `Case` = root cause (clustering as the cost lever); `structural` witness tier; rescan read by no state transition |
 
 Convergence worth noting: candidates 2 and 3 independently reached the same shape on several

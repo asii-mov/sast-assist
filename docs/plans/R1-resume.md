@@ -7,7 +7,7 @@ After this change, a plain re-run continues the last unfinished run for the same
 
 ## 2. Problem, with evidence
 
-Line numbers are for the current `skills/sast-remediate/bin/run.cjs` (936 lines), which matches `.work/snapshots/after-U4-final/`.
+Line numbers are for the current `skills/sast-assist/bin/run.cjs` (936 lines), which matches `.work/snapshots/after-U4-final/`.
 
 **(a) A plain re-run starts over.** `defaultOutDir` (`bin/run.cjs:123-133`) returns `run-<max+1>` whenever any `run-N` exists. It never looks inside the latest run. `run` computes `outDir` at line 808, before it knows the base commit (line 810-811). The only way to resume is to repeat `--out` by hand, although `SKILL.md:58` and `SKILL.md:75` both say "re-running the command is the resume path".
 
@@ -58,7 +58,7 @@ When the chosen directory already has `run-metadata.json`, `run` logs `resuming 
 
 ## 4. Steps
 
-All paths below are under `skills/sast-remediate/` unless they start with `docs/` or `.work/`.
+All paths below are under `skills/sast-assist/` unless they start with `docs/` or `.work/`.
 
 1. **Create `bin/resume.cjs`** with exactly this content (comments may be trimmed per `/no-comments`, keep the "why" ones):
 
@@ -79,7 +79,7 @@ All paths below are under `skills/sast-remediate/` unless they start with `docs/
    // The latest run of this target is continued while it is unfinished and was started on the
    // same commit. A finished run has nothing left to resume, and an unfinished run of other code
    // holds triage and branches that describe a different tree.
-   function defaultOutDir(target, base, root = path.join(os.homedir(), 'sast-remediate')) {
+   function defaultOutDir(target, base, root = path.join(os.homedir(), 'sast-assist')) {
      const dir = path.join(root, path.basename(target));
      const nums = fs.existsSync(dir)
        ? fs.readdirSync(dir).map((d) => /^run-(\d+)$/.exec(d)).filter(Boolean).map((m) => Number(m[1]))
@@ -165,7 +165,7 @@ All paths below are under `skills/sast-remediate/` unless they start with `docs/
 3. **`bin/run.cjs`, `USAGE`.** Replace the `--out` line with two lines:
    ```
      --out=DIR           output dir (default: continue the latest unfinished run of this
-                         commit under ~/sast-remediate/<repo>/, else start run-<N+1>)
+                         commit under ~/sast-assist/<repo>/, else start run-<N+1>)
    ```
 
 4. **`bin/run.cjs`, `triageAll`.** Declare `const failed = [];` before the loop. Replace the `if (!res.ok)` branch body with:
@@ -217,7 +217,7 @@ All paths below are under `skills/sast-remediate/` unless they start with `docs/
 9. **`bin/report.cjs`, `renderRemediation`.** Line 206: `(${findings.length - triagedCount} deferred)` becomes `(${findings.length - triagedCount} not triaged yet)`. "Deferred" no longer describes both a budget stop and a failed call.
 
 10. **`SKILL.md`.**
-    - Setup, **Output directory** bullet: replace `Default \`~/sast-remediate/<repo>/run-<N>\`.` with `Default: the latest \`~/sast-remediate/<repo>/run-<N>\` when that run is unfinished and was started on the same commit, otherwise a new \`run-<N+1>\`. \`--out\` always wins.`
+    - Setup, **Output directory** bullet: replace `Default \`~/sast-assist/<repo>/run-<N>\`.` with `Default: the latest \`~/sast-assist/<repo>/run-<N>\` when that run is unfinished and was started on the same commit, otherwise a new \`run-<N+1>\`. \`--out\` always wins.`
     - Stage 3: replace `Budget bounds the run; unspent work becomes \`deferred\` and is persisted, never dropped.` with `Budget bounds the run. Findings past the budget stay untriaged on disk and the next run picks them up. A triage call that returns no usable answer is not a verdict: the finding stays at triage, the run ends \`incomplete\` and names it, and the next run asks again.`
     - Rule **Malformed agent output is discarded, never repaired.** Replace `Re-run once with a fresh agent, then\ndefer.` with `Re-run once with a fresh agent, then leave the finding open for the next run.`
     - Tools section: after the `bin/stage.cjs` sentence add `\`bin/resume.cjs\` picks the run directory, merges the records already on disk, and clears the leftovers of an attempt that a crashed run never recorded.`
@@ -251,7 +251,7 @@ Write each test, run it against the unchanged code to see it fail (or, for rewri
    - rewrite run-2 meta to `{ run_status: 'incomplete' }` (legacy, no base recorded): `run-2`.
    - `mk(3)` with no metadata file: `run-3`.
    - `mk(10, { run_status: 'complete', base_commit: B })`: `run-11` (numeric, not lexical, order).
-5. `a plain re-run continues the unfinished run instead of starting run-2`. Save `process.env.HOME`, set it to `tmp()`, restore in `finally`. Run 1: `baseOpts()` with `maxFindings = 1`, no `out`, triage `notExploitable`. Assert `res1.outDir === path.join(HOME, 'sast-remediate', 'vuln-app', 'run-1')` and `res1.meta.run_status === 'incomplete'`. Run 2: `baseOpts()`, no `out`, fresh deps. Assert `res2.outDir === res1.outDir`, `deps2.state.agentCalls.length === 2`, `res2.meta.run_status === 'complete'`, and `readJson(path.join(res1.outDir, 'run-metadata.json')).base_commit === 'a'.repeat(40)`. Run 3: same again. Assert `res3.outDir` ends with `run-2`.
+5. `a plain re-run continues the unfinished run instead of starting run-2`. Save `process.env.HOME`, set it to `tmp()`, restore in `finally`. Run 1: `baseOpts()` with `maxFindings = 1`, no `out`, triage `notExploitable`. Assert `res1.outDir === path.join(HOME, 'sast-assist', 'vuln-app', 'run-1')` and `res1.meta.run_status === 'incomplete'`. Run 2: `baseOpts()`, no `out`, fresh deps. Assert `res2.outDir === res1.outDir`, `deps2.state.agentCalls.length === 2`, `res2.meta.run_status === 'complete'`, and `readJson(path.join(res1.outDir, 'run-metadata.json')).base_commit === 'a'.repeat(40)`. Run 3: same again. Assert `res3.outDir` ends with `run-2`.
 6. `a failed triage call is asked again by the next run`. `out = path.join(tmp(), 'run-1')`, triage-only opts with that `out`. Run 1 triage `{ ok: false, reason: 'rate limited' }`; run 2 triage `notExploitable`. Assert run 2 `agentCalls.length === 3`, `meta.run_status === 'complete'`, `meta.agent_failures` deep-equals `[]`, every finding's `disposition.state === 'rejected'`.
 7. `a budget stop and a failed agent call are told apart`. Triage-only, `maxFindings = 1`, triage `{ ok: false, reason: 'timed out after 300000ms' }`. Assert `meta.counts.deferred === 2`, `meta.counts.agent_failures === 1`, and `incomplete_reason` includes both `max_findings=1 reached, 2 finding(s) deferred to the next run` and `agent_failed: 1 agent call(s) failed and will be retried on the next run (` and `triage: timed out after 300000ms)`.
 8. `a failed second fix attempt keeps the first attempt and the finding open`. `fixRun({ npm: (cwd) => (cwd.includes('worktrees/base') ? 0 : 1), fix: (o) => (o.cwd.endsWith('-1') ? PATCHED : { ok: false, reason: 'rate limited' }) })` where `PATCHED` is the default `fixRun` patched answer (lift it into a const). For each finding with `gate.action === 'fix'`: `patches.length === 1`, `patches[0].outcome === 'patched'`, `disposition === null`, `stageOf(f, 'cheap') === 'fix'`. Meta `run_status === 'incomplete'`. Then re-run with `fixRun({ out, npm: () => 0 })` (default fixer). For the same ids: `patches.length === 2`, `patches[1].attempt === 2`, `disposition.state === 'fixed_unwitnessed'` (the default contract is `argued`), and meta `run_status === 'complete'`.
@@ -267,7 +267,7 @@ Net: 8 new cases (4, 5, 6, 7, 8, 9, 10, 12) and 4 rewritten (1, 2, 3, 11).
 
 ## 6. Verification
 
-1. `cd skills/sast-remediate && sh test/run-all.sh` ends with `all green`. The `pipeline` block reports 7 more passes than today (cases 4 to 10); the real-git block reports one more (case 12).
+1. `cd skills/sast-assist && sh test/run-all.sh` ends with `all green`. The `pipeline` block reports 7 more passes than today (cases 4 to 10); the real-git block reports one more (case 12).
 2. `wc -l bin/run.cjs` is below 936 (expect about 915). `wc -l bin/resume.cjs` is about 95.
 3. `node tools/check-prose.cjs` from the repo root prints `prose clean`.
 4. Mutation checks. Apply each, run the named file, see the named case fail, revert.

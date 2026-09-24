@@ -6,7 +6,7 @@ The tool refuses to hand the fixing agent anything that names the scanner or the
 
 ## 2. Problem, with evidence
 
-All paths are relative to `skills/sast-remediate/`. All line numbers were checked against the current tree.
+All paths are relative to `skills/sast-assist/`. All line numbers were checked against the current tree.
 
 ### 2a. The runtime guard reads repository source as if the triage agent wrote it
 
@@ -491,7 +491,7 @@ Total new tests: 13 (4 in 5a, 2 in 5b, 5 in 5c, 2 in 5d). Updated tests: 2.
 
 ## 6. Verification
 
-1. `cd /home/asiimov/Projects/code-scanning/skills/sast-remediate && sh test/run-all.sh`. Pass means the last line is `all green`, `node test/run.test.cjs` and `node test/selftest.cjs` both end `N passed, 0 failed`, and the prose and skill-tree checks print no `FAIL`.
+1. `cd /home/asiimov/Projects/sast-assist/skills/sast-assist && sh test/run-all.sh`. Pass means the last line is `all green`, `node test/run.test.cjs` and `node test/selftest.cjs` both end `N passed, 0 failed`, and the prose and skill-tree checks print no `FAIL`.
 2. `wc -l bin/run.cjs` prints under 1000 (expected about 910).
 3. `grep -rn "detectLanguage\b\|leakTerms" bin test tools` prints nothing.
 4. Mutation checks. Apply each, run the named file, confirm the named test FAILS, then revert. Record each result in the hand-back.
@@ -521,7 +521,7 @@ Total new tests: 13 (4 in 5a, 2 in 5b, 5 in 5c, 2 in 5d). Updated tests: 2.
    echo 'require("child_process").exec(process.argv[2]);' > $d/src/a.js
    printf 'import os,sys\nos.system(sys.argv[1])\n' > $d/main.py
    printf 'on: issue_comment\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/setup-node@v4\n      - run: echo "${{ github.event.comment.body }}"\n' > $d/.github/workflows/ci.yml
-   cd /home/asiimov/Projects/code-scanning/skills/sast-remediate && node -e '
+   cd /home/asiimov/Projects/sast-assist/skills/sast-assist && node -e '
    const S = require("./bin/scan.cjs"); const R = require("./bin/run.cjs");
    const r = S.runScanners({ scans: null, scanners: ["codeql"] }, { exec: R.realExec }, process.argv[1], process.argv[1] + "-scans");
    console.log(JSON.stringify(r.scanners), r.raw.codeql.runs.flatMap((x) => (x.results || []).map((y) => y.ruleId)).join(" "));

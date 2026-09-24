@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "finding.schema.json",
-  "title": "sast-remediate Finding",
+  "title": "sast-assist Finding",
   "description": "One root cause. The unit of triage, patching, witnessing, commit and review.",
   "type": "array",
   "items": { "$ref": "#/$defs/finding" },

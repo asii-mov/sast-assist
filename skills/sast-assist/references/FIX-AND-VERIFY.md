@@ -8,7 +8,7 @@ protocol. Splitting them would repeat the same invariants across two documents.
 One git worktree and one branch per finding, `sast-fix/<run-id>/<id>/<attempt>`, all off the same base
 commit. The operator's working tree is never touched. Rollback is declining to cherry-pick.
 
-Worktrees live under `$XDG_CACHE_HOME/sast-remediate/worktrees/<hash>/`, `~/.cache` when the
+Worktrees live under `$XDG_CACHE_HOME/sast-assist/worktrees/<hash>/`, `~/.cache` when the
 variable is unset, where the hash is taken from the output directory. Never inside the output
 directory: its `findings/` and `scans/` name the rule the fixer is never shown.
 

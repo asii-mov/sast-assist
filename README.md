@@ -1,6 +1,6 @@
-# sast-remediate
+# sast-assist
 
-Static analysis tools such as Semgrep and CodeQL flag code that looks dangerous, and many of those flags are false positives. The input may not be attacker-controlled, an earlier check may already stop the attack, or the code may never run. sast-remediate takes the scanners' output and has an AI agent try to disprove each finding from the repository's own source. The tool sets aside each finding the agent disproves and records why, so a reviewer only reads the ones that hold up. For the findings that remain, it can also write a fix on its own branch. It then checks the fix against set rules for what a fix may change, runs the project's tests and scans again. Those checks do not prove the attack is gone.
+Static analysis tools such as Semgrep and CodeQL flag code that looks dangerous, and many of those flags are false positives. The input may not be attacker-controlled, an earlier check may already stop the attack, or the code may never run. sast-assist takes the scanners' output and has an AI agent try to disprove each finding from the repository's own source. The tool sets aside each finding the agent disproves and records why, so a reviewer only reads the ones that hold up. For the findings that remain, it can also write a fix on its own branch. It then checks the fix against set rules for what a fix may change, runs the project's tests and scans again. Those checks do not prove the attack is gone.
 
 ## How it works
 
@@ -28,18 +28,18 @@ Each finding the run decides gets a recorded outcome and reason. A finding left 
 From the root of this repository:
 
 ```sh
-node skills/sast-remediate/bin/run.ts --target=/path/to/repo
+node skills/sast-assist/bin/run.ts --target=/path/to/repo
 ```
 
 Useful options:
 
 | Option | Effect |
 | --- | --- |
-| `--out=DIR` | Write output to `DIR`. The default is under `~/sast-remediate/<repo>/`. |
+| `--out=DIR` | Write output to `DIR`. The default is under `~/sast-assist/<repo>/`. |
 | `--triage-only` | Triage and report, but write no fixes. |
 | `--fix-at=high` | Fix only findings rated high or critical. |
 | `--verify=full` | Run all seven checks, adding an independent AI review and a check that normal use still works. The default, `cheap`, runs four. |
-| `--witness=dynamic` | With `--verify=full`, start the app locally and try the attack before and after the fix. It needs a way to start the app, found in the repository or set in `.sast-remediate.toml`, and a finding that triage gives a live test. See `skills/sast-remediate/references/DYNAMIC-WITNESS.md`. |
+| `--witness=dynamic` | With `--verify=full`, start the app locally and try the attack before and after the fix. It needs a way to start the app, found in the repository or set in `.sast-assist.toml`, and a finding that triage gives a live test. See `skills/sast-assist/references/DYNAMIC-WITNESS.md`. |
 | `--scans=DIR` | Reuse `semgrep.json` and `codeql.sarif` from `DIR` instead of scanning. |
 | `--scanners=semgrep` | Run only Semgrep. |
 | `--semgrep-config=p/owasp-top-ten` | Choose the Semgrep rules. The default is `p/default`. |
@@ -74,8 +74,8 @@ jobs:
           path: target
       - uses: actions/checkout@v4
         with:
-          repository: your-org/code-scanning
-          token: ${{ secrets.SAST_REMEDIATE_TOKEN }}
+          repository: your-org/sast-assist
+          token: ${{ secrets.SAST_ASSIST_TOKEN }}
           path: tool
       - uses: actions/setup-node@v4
         with:
@@ -89,7 +89,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          node tool/skills/sast-remediate/bin/run.ts \
+          node tool/skills/sast-assist/bin/run.ts \
             --target=target --out="$RUNNER_TEMP/sast" --scanners=semgrep --triage-only
       - uses: actions/upload-artifact@v4
         with:
@@ -128,7 +128,7 @@ Install the type checker once at the repository root, then run every check:
 
 ```sh
 npm install
-cd skills/sast-remediate && sh test/run-all.sh
+cd skills/sast-assist && sh test/run-all.sh
 ```
 
-The types in `schema/types.ts` are generated from `schema/finding.schema.json` and `schema/agent-results.schema.json`. After changing either schema, run `node tools/gen-schema-types.ts` from `skills/sast-remediate`.
+The types in `schema/types.ts` are generated from `schema/finding.schema.json` and `schema/agent-results.schema.json`. After changing either schema, run `node tools/gen-schema-types.ts` from `skills/sast-assist`.

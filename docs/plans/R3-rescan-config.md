@@ -10,7 +10,7 @@ It also confirms, with a test, that the second scan's absolute file paths are ma
 
 ## 2. Problem, with evidence
 
-All line numbers are in `skills/sast-remediate/` and were checked against the current tree.
+All line numbers are in `skills/sast-assist/` and were checked against the current tree.
 
 - `bin/scan.cjs:51` hard-codes Semgrep's rules: `deps.exec('semgrep', ['scan', '--config', 'p/default', ...])`.
 - `bin/scan.cjs:63` hard-codes CodeQL's suite: `` `codeql/${lang}-queries:codeql-suites/${lang}-security-extended.qls` ``.
@@ -188,7 +188,7 @@ Touched symbols, for sequencing: `bin/scan.cjs` `runScanners`, `baselineOf`, `re
 
 ## 5. Tests
 
-All in `skills/sast-remediate/test/run.test.cjs`. Helpers `tmp`, `baseOpts`, `makeDeps`, `fixRun`, `pathHit`, `movingFix`, `PATH_ID`, `REPO`, `notExploitable`, `renderRemediation` already exist. `semgrepCalls` below means `deps.state.execCalls.filter((c) => c.startsWith('semgrep '))`.
+All in `skills/sast-assist/test/run.test.cjs`. Helpers `tmp`, `baseOpts`, `makeDeps`, `fixRun`, `pathHit`, `movingFix`, `PATH_ID`, `REPO`, `notExploitable`, `renderRemediation` already exist. `semgrepCalls` below means `deps.state.execCalls.filter((c) => c.startsWith('semgrep '))`.
 
 Section `cli`.
 
@@ -242,8 +242,8 @@ That is 9 new cases and 2 extended ones.
 
 ## 6. Verification
 
-1. `cd skills/sast-remediate && sh test/run-all.sh`. Pass means it ends with `all green`.
-2. `wc -l skills/sast-remediate/bin/run.cjs` prints under 1000.
+1. `cd skills/sast-assist && sh test/run-all.sh`. Pass means it ends with `all green`.
+2. `wc -l skills/sast-assist/bin/run.cjs` prints under 1000.
 3. Mutation checks. Apply each, run `node test/run.test.cjs`, confirm the named case fails, then revert.
    - `bin/scan.cjs` rescan: drop `scanConfig: baseline.scanConfig` and set `scanConfig: DEFAULT_SCAN_CONFIG`. Cases 6, 8 and 9 fail.
    - `bin/scan.cjs` runScanners: put back the literal `'--config', 'p/default'`. Cases 5 and 6 fail.
@@ -255,11 +255,11 @@ That is 9 new cases and 2 extended ones.
    - `bin/report.cjs`: delete the pushed lines. Case 12 fails.
    - `bin/run.cjs` parseArgs: drop `.map(semgrepConfigArg)`. Case 2 fails.
 4. Dry run on the real mkcert target, no agent call.
-   `cd skills/sast-remediate && node bin/run.cjs --target=../../.work/targets/mkcert --scans=../../.work/targets/scans-mkcert --scanners=semgrep --semgrep-config=p/trailofbits --dry-run`.
+   `cd skills/sast-assist && node bin/run.cjs --target=../../.work/targets/mkcert --scans=../../.work/targets/scans-mkcert --scanners=semgrep --semgrep-config=p/trailofbits --dry-run`.
    Pass means the output has `scan config   semgrep p/trailofbits; codeql security-extended`.
 5. Real scanner probe, no agent call. It needs the Semgrep registry. If the fetch fails, record the error and skip this step.
    ```sh
-   cd skills/sast-remediate && node -e '
+   cd skills/sast-assist && node -e '
    const { runScanners } = require("./bin/scan.cjs");
    const { spawnSync } = require("child_process");
    const exec = (c, a) => { const r = spawnSync(c, a, { encoding: "utf8", maxBuffer: 1 << 26 }); return { status: r.status, stdout: r.stdout, stderr: r.stderr }; };

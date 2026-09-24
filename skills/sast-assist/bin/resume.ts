@@ -17,7 +17,7 @@ const readJson = (f: string): unknown => JSON.parse(fs.readFileSync(f, 'utf8'));
 // The latest run of this target is continued while it is unfinished and was started on the
 // same commit. A finished run has nothing left to resume, and an unfinished run of other code
 // holds triage and branches that describe a different tree.
-function defaultOutDir(target: string, base: string | null, root = path.join(os.homedir(), 'sast-remediate')) {
+function defaultOutDir(target: string, base: string | null, root = path.join(os.homedir(), 'sast-assist')) {
   const dir = path.join(root, path.basename(target));
   const nums = fs.existsSync(dir)
     ? fs.readdirSync(dir).map((d) => /^run-(\d+)$/.exec(d)).filter((m) => m !== null).map((m) => Number(m[1]))

@@ -52,8 +52,8 @@ function discoverAppHarness(root: string): AppHarness[] {
   });
 
   // An explicit block always wins over inference.
-  const toml = exists(root, '.sast-remediate.toml')
-    ? fs.readFileSync(path.join(root, '.sast-remediate.toml'), 'utf8') : '';
+  const toml = exists(root, '.sast-assist.toml')
+    ? fs.readFileSync(path.join(root, '.sast-assist.toml'), 'utf8') : '';
   const custom = /\[harness\][\s\S]*?up\s*=\s*\[([^\]]+)\]/.exec(toml);
   if (custom) {
     const argv = custom[1].split(',').map((s) => s.trim().replace(/^["']|["']$/g, ''));

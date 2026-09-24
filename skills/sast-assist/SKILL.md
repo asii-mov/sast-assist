@@ -1,9 +1,9 @@
 ---
-name: sast-remediate
+name: sast-assist
 description: Triage, fix and verify Semgrep and CodeQL findings. Use when a repository has SAST results to work through, when asked to cut false positives from a scan, to auto-fix findings above a severity threshold, or to verify that a security patch actually closed the hole. Also answers focused questions about a single finding.
 ---
 
-# sast-remediate
+# sast-assist
 
 Scanners find. This skill decides what is real, fixes what crosses a threshold, and proves the fix.
 
@@ -36,7 +36,7 @@ Resolve before anything else.
 
 - **Skill directory.** The absolute directory holding this file.
 - **Target.** The repository root under review.
-- **Output directory.** Outside the target. Default: the latest `~/sast-remediate/<repo>/run-<N>`
+- **Output directory.** Outside the target. Default: the latest `~/sast-assist/<repo>/run-<N>`
   when that run is unfinished and was started on the same commit, otherwise a new `run-<N+1>`.
   `--out` always wins. Inside the target only when the user picks it and version control ignores it.
 - **Base commit.** The reviewed commit, and whether the worktree is dirty.

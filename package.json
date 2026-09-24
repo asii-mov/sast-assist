@@ -1,5 +1,5 @@
 {
-  "name": "code-scanning-dev",
+  "name": "sast-assist-dev",
   "private": true,
   "type": "module",
   "description": "Developer tooling only. The skill itself has no dependencies.",

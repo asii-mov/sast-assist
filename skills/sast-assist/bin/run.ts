@@ -98,14 +98,14 @@ const sha256 = (s: string) => crypto.createHash('sha256').update(s, 'utf8').dige
 // is never shown. Derived from the output directory so a resumed run finds its base tree again.
 const cacheHome = () => process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
 const worktreeRootFor = (outDir: string) =>
-  path.join(cacheHome(), 'sast-remediate', 'worktrees', sha256(path.resolve(outDir)).slice(0, 16));
+  path.join(cacheHome(), 'sast-assist', 'worktrees', sha256(path.resolve(outDir)).slice(0, 16));
 
 // ------------------------------------------------------------------------ cli
 
 const USAGE = `usage: run.ts --target=DIR [options]
   --target=DIR        repository to remediate (required)
   --out=DIR           output dir (default: continue the latest unfinished run of this
-                      commit under ~/sast-remediate/<repo>/, else start run-<N+1>)
+                      commit under ~/sast-assist/<repo>/, else start run-<N+1>)
   --fix-at=LEVEL      informational|low|medium|high|critical  (default medium)
   --verify=LEVEL      none|cheap|full                          (default cheap)
   --witness=dynamic   also offer the live-app witness (boots the app on loopback)
@@ -632,8 +632,8 @@ async function verifyPatch(f: FindingRecord, patch: Patch, ctx: FixCtx): Promise
 
   if (!stopped && diff.trim()) {
     // Set here, not inherited, so the commit works on a CI runner with no identity and reads as the tool's.
-    const c = ctx.git(['-c', 'user.name=sast-remediate', '-c', 'user.email=sast-remediate@users.noreply.invalid',
-      'commit', '-q', '-m', `sast-remediate: enforce the invariant for ${f.id}`], wt);
+    const c = ctx.git(['-c', 'user.name=sast-assist', '-c', 'user.email=sast-assist@users.noreply.invalid',
+      'commit', '-q', '-m', `sast-assist: enforce the invariant for ${f.id}`], wt);
     if (c.status !== 0) {
       patch.outcome = 'error';
       patch.detail = `commit_failed: ${trim(c.stderr)}`;

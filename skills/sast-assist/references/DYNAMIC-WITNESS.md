@@ -26,7 +26,7 @@ A fix verified only at the function boundary can leave every one of those intact
 Discovered from the repository, never invented. `bin/app-harness.ts` returns every candidate and
 the triage agent picks.
 
-Precedence: an explicit `[harness]` block in `.sast-remediate.toml` always wins. Then
+Precedence: an explicit `[harness]` block in `.sast-assist.toml` always wins. Then
 `docker-compose` with a service exposing a port, a `Procfile` web entry, a `package.json` start
 or dev script, `manage.py`, `config.ru` or `bin/rails`, then `go.mod`. Those are the ones
 `discoverAppHarness` implements. Anything else needs an explicit `[harness]` block.

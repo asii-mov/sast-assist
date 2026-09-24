@@ -1,6 +1,6 @@
-# sast-remediate fix plan
+# sast-assist fix plan
 
-This plan fixes the five Act On findings from the 2026-09-22 interrogate review of `skills/sast-remediate/`.
+This plan fixes the five Act On findings from the 2026-09-22 interrogate review of `skills/sast-assist/`.
 It is for the operator who runs `node bin/run.cjs --target=DIR` and reads `REMEDIATION.md` afterwards.
 After it lands, a default run patches repos with no tests, makes one fixer call per good fix, keeps a correct fix whose line still matches the rule, reports only branches that exist, and ignores the target's own Claude settings.
 The rule the program enforces is one source of truth for a finding's outcome, the saved `disposition`, which `stageOf`, the fix loop and the report all read.
@@ -19,7 +19,7 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 ### Arm the program
 
 - [ ] State the protocol and this plan to the operator. The operator's request on 2026-09-22 ("give requests to fix these to opus 5.5") is the go.
-- [ ] Snapshot `skills/sast-remediate/` to `.work/snapshots/sast-remediate-pre-fix/` before U0. Every diff below is taken against this snapshot or the previous unit's snapshot.
+- [ ] Snapshot `skills/sast-assist/` to `.work/snapshots/sast-assist-pre-fix/` before U0. Every diff below is taken against this snapshot or the previous unit's snapshot.
 - [ ] Read these at program start.
   - [ ] `pstack/skills/poteto-mode/SKILL.md`
   - [ ] `pstack/skills/principle-test-behavior-not-implementation/SKILL.md`
@@ -36,13 +36,13 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
   - [ ] U2 after U1.
   - [ ] U3 after U2.
   - [ ] U4 after U3.
-- [ ] Hold the file boundaries. Every owner touches only `skills/sast-remediate/**`, `design/FUTURE-IMPROVEMENTS.md` and `.work/`. No owner edits `reference/`, `fixtures/vuln-app/src/**` or `AGENTS.md`.
+- [ ] Hold the file boundaries. Every owner touches only `skills/sast-assist/**`, `design/FUTURE-IMPROVEMENTS.md` and `.work/`. No owner edits `reference/`, `fixtures/vuln-app/src/**` or `AGENTS.md`.
 - [ ] Hold the review gate. No unit changes an operator-facing interaction beyond the report text, so none is review-gated.
 
 ### Unit mechanics, for every unit
 
 - [ ] Take a fresh snapshot at `.work/snapshots/after-<unit>/` when the unit is green.
-- [ ] Run `sh test/run-all.sh` from `skills/sast-remediate/` and keep it green.
+- [ ] Run `sh test/run-all.sh` from `skills/sast-assist/` and keep it green.
 - [ ] Apply `/deslop` and `/no-comments` rules to the diff. Keep a comment only for a non-obvious why.
 - [ ] Return a report with the file list, the new test case names, the `run-all.sh` tail, and anything left undone.
 
@@ -57,7 +57,7 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 The live check runs once at the end, after U4, on this machine.
 
 - [ ] Copy `.work/targets/vuln-app-git` to `.work/targets/vuln-app-live` with `cp -a`.
-- [ ] Run `node bin/run.cjs --target=<copy> --scans=test/fixtures --out=.work/targets/run-postfix` from `skills/sast-remediate/`.
+- [ ] Run `node bin/run.cjs --target=<copy> --scans=test/fixtures --out=.work/targets/run-postfix` from `skills/sast-assist/`.
 - [ ] Read `run-postfix/REMEDIATION.md`, `run-postfix/findings/*.json` and `git -C <copy> branch -a`.
 
 ## Add a real-git pipeline test (U0)
@@ -66,9 +66,9 @@ The live check runs once at the end, after U4, on this machine.
 
 **Files.**
 
-- [ ] Create `skills/sast-remediate/test/pipeline.real.test.cjs`.
-- [ ] Create `skills/sast-remediate/test/fake-claude.cjs`.
-- [ ] Edit `skills/sast-remediate/test/run-all.sh`.
+- [ ] Create `skills/sast-assist/test/pipeline.real.test.cjs`.
+- [ ] Create `skills/sast-assist/test/fake-claude.cjs`.
+- [ ] Edit `skills/sast-assist/test/run-all.sh`.
 
 **Build.**
 
@@ -109,14 +109,14 @@ The live check runs once at the end, after U4, on this machine.
 
 **Files.**
 
-- [ ] Edit `skills/sast-remediate/bin/run.cjs`.
-- [ ] Edit `skills/sast-remediate/SKILL.md`.
-- [ ] Edit `skills/sast-remediate/test/run.test.cjs`.
-- [ ] Edit `skills/sast-remediate/bin/report.cjs`.
+- [ ] Edit `skills/sast-assist/bin/run.cjs`.
+- [ ] Edit `skills/sast-assist/SKILL.md`.
+- [ ] Edit `skills/sast-assist/test/run.test.cjs`.
+- [ ] Edit `skills/sast-assist/bin/report.cjs`.
 - [ ] Edit `design/FUTURE-IMPROVEMENTS.md`.
-- [ ] Delete `skills/sast-remediate/bin/partition.cjs`.
-- [ ] Delete `skills/sast-remediate/test/partition.test.cjs`.
-- [ ] Delete `skills/sast-remediate/err.log`.
+- [ ] Delete `skills/sast-assist/bin/partition.cjs`.
+- [ ] Delete `skills/sast-assist/test/partition.test.cjs`.
+- [ ] Delete `skills/sast-assist/err.log`.
 
 **Build.**
 
@@ -134,7 +134,7 @@ The live check runs once at the end, after U4, on this machine.
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
 - [ ] `test/run.test.cjs` gains the inverted case. `test/pipeline.real.test.cjs` case flips. Run `sh test/run-all.sh`.
-- [ ] `grep -rn "allow-unverified\|partition\|integration-" skills/sast-remediate` prints only intended hits.
+- [ ] `grep -rn "allow-unverified\|partition\|integration-" skills/sast-assist` prints only intended hits.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
@@ -159,11 +159,11 @@ The live check runs once at the end, after U4, on this machine.
 
 **Files.**
 
-- [ ] Edit `skills/sast-remediate/bin/stage.cjs`.
-- [ ] Edit `skills/sast-remediate/bin/run.cjs`.
-- [ ] Edit `skills/sast-remediate/bin/report.cjs`.
-- [ ] Edit `skills/sast-remediate/test/selftest.cjs`.
-- [ ] Edit `skills/sast-remediate/test/run.test.cjs`.
+- [ ] Edit `skills/sast-assist/bin/stage.cjs`.
+- [ ] Edit `skills/sast-assist/bin/run.cjs`.
+- [ ] Edit `skills/sast-assist/bin/report.cjs`.
+- [ ] Edit `skills/sast-assist/test/selftest.cjs`.
+- [ ] Edit `skills/sast-assist/test/run.test.cjs`.
 
 **Build.**
 
@@ -204,8 +204,8 @@ The live check runs once at the end, after U4, on this machine.
 
 **Files.**
 
-- [ ] Edit `skills/sast-remediate/bin/run.cjs`.
-- [ ] Edit `skills/sast-remediate/test/run.test.cjs`.
+- [ ] Edit `skills/sast-assist/bin/run.cjs`.
+- [ ] Edit `skills/sast-assist/test/run.test.cjs`.
 
 **Build.**
 
@@ -244,10 +244,10 @@ The live check runs once at the end, after U4, on this machine.
 
 **Files.**
 
-- [ ] Edit `skills/sast-remediate/bin/agent.cjs`.
-- [ ] Edit `skills/sast-remediate/bin/run.cjs`.
-- [ ] Edit `skills/sast-remediate/test/agent.test.cjs`.
-- [ ] Edit `skills/sast-remediate/test/run.test.cjs`.
+- [ ] Edit `skills/sast-assist/bin/agent.cjs`.
+- [ ] Edit `skills/sast-assist/bin/run.cjs`.
+- [ ] Edit `skills/sast-assist/test/agent.test.cjs`.
+- [ ] Edit `skills/sast-assist/test/run.test.cjs`.
 
 **Build.**
 
@@ -305,11 +305,11 @@ The live check runs once at the end, after U4, on this machine.
 - U3 rule-and-file matching hides a patch that adds a second hit of an existing rule in the same file. The U3 owner notes this in `references/FIX-AND-VERIFY.md`.
 - U4 may show that project `CLAUDE.md` still loads under `--setting-sources user`. The fallback is running agents from a scratch cwd, which changes how the fixer finds files.
 - The live check spends real model calls and may hit HTTP 429. A 429 during the live run is a retry, not a failure of the unit.
-- Another session may edit `skills/sast-remediate/` during the program. Each owner compares file mtimes against the snapshot before writing and stops on a mismatch.
+- Another session may edit `skills/sast-assist/` during the program. Each owner compares file mtimes against the snapshot before writing and stops on a mismatch.
 - Out of scope and still open. Resume without `--out` starts over. A failed triage call parks a finding for good. A crash mid-fix leaves a branch that blocks the retry, as `run-full3` shows. The fixer has unrestricted Bash. The leak guard rejects ordinary source. CodeQL analyses one language.
 
 ## Appendix D. Links and reading list
 
 - The interrogate verdict from this session, with findings from reviewers on fable, opus and sonnet.
-- `skills/sast-remediate/SKILL.md` and `references/FIX-AND-VERIFY.md` before U1 and U3.
+- `skills/sast-assist/SKILL.md` and `references/FIX-AND-VERIFY.md` before U1 and U3.
 - `pstack/skills/interrogate/SKILL.md` for a re-review after U4 if the operator wants one.

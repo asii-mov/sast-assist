@@ -14,7 +14,7 @@ has since been removed from the project.
 
 ---
 
-## Candidate 1 — `sast-remediate` (the base)
+## Candidate 1 — `sast-assist` (the base)
 
 One skill, 10 files, 3 agent contracts. **Triage returns a `SecurityContract`, not a verdict;
 the verdict falls out of it.**
@@ -56,7 +56,7 @@ the verdict falls out of it.**
 - **Defect (judge, unverified):** `proof_obligation` never mechanically run against the
   pre-patch baseline; red-green reduced to an LLM's opinion.
 
-## Candidate 3 — `sast-triage` + `sast-remediate`, split on the mutation boundary
+## Candidate 3 — `sast-triage` + `sast-assist`, split on the mutation boundary
 
 - Fingerprint from the sink's **enclosing-function identity**, not line number.
 - Two skills split on trust/mutation, not pipeline stage: triage is read-only; remediate is

@@ -1,4 +1,4 @@
-# Rationale: `sast-remediate`
+# Rationale: `sast-assist`
 
 Shaped per `architect/references/rationale-template.md`. The design sketch is `DESIGN.md`;
 the Phase A grounding is `GROUNDING.md`; the arena record is `SYNTHESIS-NOTE.md`.
@@ -36,10 +36,10 @@ pattern matcher. Rename a variable, add an indirection, drop a `nosemgrep`.
 ## Usage (caller's view)
 
 ```
-  /sast-remediate .                  # full run, default fix threshold = medium
-  /sast-remediate . --fix-at high
-  /sast-remediate . --triage-only    # CI-safe; touches nothing
-  /sast-remediate .                  # run it again: resumes. There is no --resume flag.
+  /sast-assist .                  # full run, default fix threshold = medium
+  /sast-assist . --fix-at high
+  /sast-assist . --triage-only    # CI-safe; touches nothing
+  /sast-assist .                  # run it again: resumes. There is no --resume flag.
 ```
 
 One command, one threshold flag. The operator makes exactly one decision at the end: review

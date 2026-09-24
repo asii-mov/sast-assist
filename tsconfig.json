@@ -12,5 +12,5 @@
     "strict": true,
     "skipLibCheck": true
   },
-  "include": ["skills/sast-remediate/**/*.ts", "tools/**/*.ts"]
+  "include": ["skills/sast-assist/**/*.ts", "tools/**/*.ts"]
 }

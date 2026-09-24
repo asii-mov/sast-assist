@@ -19,11 +19,11 @@ fix verified only at the function boundary can leave all of those intact.
 
 What already exists:
 
-- `skills/sast-remediate/bin/app-harness.cjs` discovers, boots, probes and tears down the app.
+- `skills/sast-assist/bin/app-harness.cjs` discovers, boots, probes and tears down the app.
   Discovery reads the repo and never invents a command.
-- `skills/sast-remediate/bin/witness-run.cjs` runs the four-step differential.
-- `skills/sast-remediate/references/DYNAMIC-WITNESS.md` holds the sandbox rules.
-- `skills/sast-remediate/test/e2e-witness.cjs` boots three trees of the fixture app and passes.
+- `skills/sast-assist/bin/witness-run.cjs` runs the four-step differential.
+- `skills/sast-assist/references/DYNAMIC-WITNESS.md` holds the sandbox rules.
+- `skills/sast-assist/test/e2e-witness.cjs` boots three trees of the fixture app and passes.
 
 What is measured, from that e2e run. An honest fix produced `differential_ok=true` with the
 control green on both trees. A fix that disabled the endpoint **also** produced

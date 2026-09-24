@@ -264,7 +264,7 @@ t('--dry-run prints the plan, names the skipped obligations, and writes nothing'
   assert.ok(/verify\s+cheap/.test(text), text);
   assert.ok(text.includes('differential_witness'), 'the plan must name what cheap does not check');
   assert.ok(text.includes('scan normalize pre-resolve triage gate fix verify report'));
-  assert.ok(/worktrees\s+\S+sast-remediate\/worktrees\//.test(text), text);
+  assert.ok(/worktrees\s+\S+sast-assist\/worktrees\//.test(text), text);
   assert.ok(text.includes('scan config   semgrep p/default; codeql security-extended'), text);
   const deps = makeDeps();
   await R.run(opts, deps);
@@ -943,7 +943,7 @@ t('the fixer works in a worktree outside the run directory, from which no relati
   const f = must(res.findings.find((x) => x.patches.length), 'f');
   const cwd = must(c.cwd, 'the fixer cwd');
   assert.strictEqual(path.basename(cwd), `${f.id}-1`);
-  assert.strictEqual(path.dirname(path.dirname(cwd)), path.join(CACHE, 'sast-remediate', 'worktrees'));
+  assert.strictEqual(path.dirname(path.dirname(cwd)), path.join(CACHE, 'sast-assist', 'worktrees'));
   assert.ok(path.relative(out, cwd).startsWith('..'), `${cwd} is inside ${out}`);
   for (let k = 1; k <= 4; k++) {
     assert.ok(!fs.existsSync(path.resolve(cwd, '../'.repeat(k), 'findings')), `findings reachable at depth ${k}`);
@@ -996,7 +996,7 @@ t('the fix commit carries the tool identity, so it lands on a machine with no gi
   const f = must(res.findings.find((x) => x.id === 'f_6ed43412e0d9b09d'), 'f');
   assert.notStrictEqual(f.patches[0].outcome, 'error', String(f.patches[0].detail));
   const commit = must(deps.state.execCalls.find((c) => / commit /.test(c)), 'the commit call');
-  assert.ok(commit.includes('-c user.name=sast-remediate -c user.email=sast-remediate@users.noreply.invalid commit '), commit);
+  assert.ok(commit.includes('-c user.name=sast-assist -c user.email=sast-assist@users.noreply.invalid commit '), commit);
 });
 
 t('at cheap, the witness obligations are absent from the record, not faked', async () => {
@@ -1368,7 +1368,7 @@ t('a plain re-run continues the unfinished run instead of starting run-2', async
     const agents = { '#/$defs/triage': () => ({ ok: true, data: notExploitable() }) };
     const opts1 = baseOpts(); opts1.maxFindings = 1;
     const res1 = await runFull(opts1, makeDeps({ agents }));
-    assert.strictEqual(res1.outDir, path.join(process.env.HOME, 'sast-remediate', 'vuln-app', 'run-1'));
+    assert.strictEqual(res1.outDir, path.join(process.env.HOME, 'sast-assist', 'vuln-app', 'run-1'));
     assert.strictEqual(res1.meta.run_status, 'incomplete');
 
     const deps2 = makeDeps({ agents });

@@ -6,7 +6,7 @@ Today, asking for the strictest check (`--verify=full`) guarantees failure. Ever
 
 ## 2. Problem, with evidence
 
-All line numbers are in `skills/sast-remediate/` and were read on the current tree (run.cjs is 936 lines).
+All line numbers are in `skills/sast-assist/` and were read on the current tree (run.cjs is 936 lines).
 
 1. **Triage is only ever offered `argued`.** `bin/run.cjs:851` sets `witnessTiers: ['argued']` unconditionally, and `buildTriagePrompt` prints it at `bin/run.cjs:289`.
 2. **An argued witness at full is always a failure.** `runDifferentialWitness` (`bin/run.cjs:631-648`) returns `{ status: 'unavailable', reason: 'tier_not_implemented:argued' }` for every non-dynamic tier. `differential_witness` is not in `MAY_BE_UNAVAILABLE` (`bin/stage.cjs:372`), so `evaluateVerification` counts it as failed. `verifyPatch` then stops at `bin/run.cjs:576` (`stopped = ... !== 'pass'`), so `functional_control`, `regression_suite` and `no_new_findings` are never written and show as `missing`. `stageOf` sends the finding back to `fix`, and the second attempt fails the same way.
@@ -94,7 +94,7 @@ Not implemented in R5. Reason, stated for `design/FUTURE-IMPROVEMENTS.md`:
 
 ## 4. Steps
 
-Do them in this order. Run `sh test/run-all.sh` from `skills/sast-remediate` after step 7 and at the end.
+Do them in this order. Run `sh test/run-all.sh` from `skills/sast-assist` after step 7 and at the end.
 
 1. **`bin/stage.cjs`.**
    - Below `MAY_BE_UNAVAILABLE`, add `EXCUSED_AT_ARGUED` and `excused(name, tier)` exactly as in section 3, with a two-line comment: an argued witness sends no attack and has no control, so the pair is recorded unavailable with the obstacle and excused, and the disposition is `fixed_unwitnessed` so a human still reviews it.
@@ -238,7 +238,7 @@ Ten new cases: 3 selftest, 4 run.test, 3 pipeline.real. `test/e2e-witness.cjs` s
 
 ## 6. Verification
 
-From `/home/asiimov/Projects/code-scanning/skills/sast-remediate`:
+From `/home/asiimov/Projects/sast-assist/skills/sast-assist`:
 
 1. `sh test/run-all.sh` ends with `all green`. Each suite prints `N passed, 0 failed`.
 2. `wc -l bin/run.cjs` prints a number below 1000.

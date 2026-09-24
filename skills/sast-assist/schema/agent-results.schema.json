@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "agent-results.schema.json",
-  "title": "sast-remediate agent return envelopes",
+  "title": "sast-assist agent return envelopes",
   "description": "What each agent role must return. Exactly one JSON object, no surrounding prose. A malformed or prose-wrapped result is discarded whole, never repaired.",
 
   "$defs": {

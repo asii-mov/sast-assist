@@ -1,10 +1,10 @@
-# Plan: move sast-remediate from JavaScript to TypeScript
+# Plan: move sast-assist from JavaScript to TypeScript
 
 ## Done means
 
 All of these hold on the final commit:
 
-1. No `.cjs` file is left under `skills/sast-remediate/` or `tools/`. Every one is a `.ts` file that Node runs directly, with no build step.
+1. No `.cjs` file is left under `skills/sast-assist/` or `tools/`. Every one is a `.ts` file that Node runs directly, with no build step.
 2. `tsc --noEmit` passes with `strict: true` and `erasableSyntaxOnly: true`, so the checker rejects any TypeScript syntax that Node can't run.
 3. `test/run-all.sh` passes and runs the type check too. Every suite passes the same number of tests as the baseline (62, 23, 105, 18, 8) or more.
 4. A real run against `.work/targets/vuln-app-git` with `--verify=full --witness=dynamic --model=opus` gives the same results as `run-full5`: 2 fixed, 1 rejected, and `dynamic` witnesses passing.
@@ -31,7 +31,7 @@ All of these hold on the final commit:
 ## Units, riskiest first. Each one ends in a check.
 
 0. **Baseline.** Record each suite's pass count, and the finding outcomes from `run-full5`. Check: the numbers are saved in the decision log.
-1. **Scaffold.** Add a dev-only `package.json` at the repo root with `typescript` and `@types/node`, pinned, plus a lockfile. Add a `tsconfig.json` with `strict`, `noEmit`, `erasableSyntaxOnly`, `verbatimModuleSyntax`, `module: nodenext` and `allowImportingTsExtensions`. Add `skills/sast-remediate/package.json` holding only `"type": "module"` and `engines.node >=22.18`, so the shipped skill states its Node floor. Check: `tsc` runs and reports nothing to check yet.
+1. **Scaffold.** Add a dev-only `package.json` at the repo root with `typescript` and `@types/node`, pinned, plus a lockfile. Add a `tsconfig.json` with `strict`, `noEmit`, `erasableSyntaxOnly`, `verbatimModuleSyntax`, `module: nodenext` and `allowImportingTsExtensions`. Add `skills/sast-assist/package.json` holding only `"type": "module"` and `engines.node >=22.18`, so the shipped skill states its Node floor. Check: `tsc` runs and reports nothing to check yet.
 2. **Spike the risky path.** Convert `test/fake-claude` and `bin/agent` by hand. Check: `agent.test` and `pipeline.real.test` pass with a `.ts` target behind the `claude` symlink.
 3. **Lever.** Write `tools/cjs-to-esm.mjs`, a one-off codemod for the mechanical part: `git mv` to `.ts`, `require` to `import`, `module.exports` to `export`, `__dirname` to `import.meta.dirname`, `require.main === module` to `import.meta.main`, and `.cjs` path strings to `.ts`. Prove it by rerunning it on the unit 2 files and diffing against the hand-made version. Check: that diff is empty, or only in formatting.
 4. **Convert, leaf modules first.** Apply the codemod one module at a time, in dependency order (gate, stage, leak-guard, validate, normalize, patch-guard, app-harness, witness-run, scan, resume, report, run), then the tests and tools. Check after each: the whole suite passes. `tsc` runs with `noImplicitAny` off for now. This intermediate state is planned and ends in unit 6.

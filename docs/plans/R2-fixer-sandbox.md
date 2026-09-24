@@ -15,7 +15,7 @@ cheapest model proves the `claude` command actually behaves the way its help tex
 
 All line numbers verified against the current tree (same as `.work/snapshots/after-U4-final/`).
 
-1. **The fixer has a shell.** `skills/sast-remediate/bin/run.cjs:442` is
+1. **The fixer has a shell.** `skills/sast-assist/bin/run.cjs:442` is
    `const FIX_TOOLS = ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash'];` and `run.cjs:487-490`
    passes it as `allowedTools` to the fix call. `semgrep` and `codeql` are on PATH
    (`~/.local/bin`, AGENTS.md), so the fixer can run the scanner, and `cat` anything it can find.
@@ -98,7 +98,7 @@ Worktree root, a new pure function in `bin/run.cjs`, stored on `ctx.worktreeRoot
 ```js
 const cacheHome = () => process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
 const worktreeRootFor = (outDir) =>
-  path.join(cacheHome(), 'sast-remediate', 'worktrees', sha256(path.resolve(outDir)).slice(0, 16));
+  path.join(cacheHome(), 'sast-assist', 'worktrees', sha256(path.resolve(outDir)).slice(0, 16));
 ```
 
 Fix worktrees become `<worktreeRoot>/<id>-<attempt>` and the base tree `<worktreeRoot>/base`.
@@ -144,7 +144,7 @@ the `require.main` block. `bin/run.cjs`: `cacheHome` and `worktreeRootFor` (new,
 `test/pipeline.real.test.cjs`, `test/fake-claude.cjs`. Prose: `SKILL.md`,
 `references/FIX-AND-VERIFY.md`.
 
-All paths below are relative to `/home/asiimov/Projects/code-scanning`.
+All paths below are relative to `/home/asiimov/Projects/sast-assist`.
 
 ### Step 1. Real-call probe (budgeted: 2 calls, `--model haiku`, at most one rerun)
 
@@ -286,7 +286,7 @@ report `.work/probe/sandbox.txt` to the orchestrator. Do not improvise a differe
    // is never shown. Derived from the output directory so a resumed run finds its base tree again.
    const cacheHome = () => process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
    const worktreeRootFor = (outDir) =>
-     path.join(cacheHome(), 'sast-remediate', 'worktrees', sha256(path.resolve(outDir)).slice(0, 16));
+     path.join(cacheHome(), 'sast-assist', 'worktrees', sha256(path.resolve(outDir)).slice(0, 16));
    ```
 
    Also replace the comment in `fixOne` above `const branch` ("Branches live in the target
@@ -303,8 +303,8 @@ report `.work/probe/sandbox.txt` to the orchestrator. Do not improvise a differe
     `fs.mkdirSync(worktreeRoot, { recursive: true, mode: 0o700 });`, and add `worktreeRoot` to the
     `ctx` object literal on the line with `opts, deps, target, outDir, runId`.
 11. `module.exports`: add `worktreeRootFor` next to `refSafe`.
-12. Confirm `grep -n allowedTools skills/sast-remediate/bin/*.cjs` prints nothing and
-    `wc -l skills/sast-remediate/bin/run.cjs` is under 1000.
+12. Confirm `grep -n allowedTools skills/sast-assist/bin/*.cjs` prints nothing and
+    `wc -l skills/sast-assist/bin/run.cjs` is under 1000.
 
 ### Step 4. `test/fake-claude.cjs`
 
@@ -315,7 +315,7 @@ not today; leave the comment otherwise).
 
 ### Step 5. Prose
 
-1. `skills/sast-remediate/SKILL.md` line 126-127. Replace
+1. `skills/sast-assist/SKILL.md` line 126-127. Replace
    "No rule id, no scanner name, no scanner message, no observation, and no scanner tool access."
    with
    "No rule id, no scanner name, no scanner message, no observation, and no way to go and look. It
@@ -324,7 +324,7 @@ not today; leave the comment otherwise).
 2. `SKILL.md` line 59, after "Agents run with the target's Claude settings, `CLAUDE.md` and hooks
    shut out." add the sentence "Each gets only the tools its role needs, and none gets a shell."
 3. `references/FIX-AND-VERIFY.md`, Branch protocol, after the first paragraph add:
-   "Worktrees live under `$XDG_CACHE_HOME/sast-remediate/worktrees/<hash>/`, `~/.cache` when the
+   "Worktrees live under `$XDG_CACHE_HOME/sast-assist/worktrees/<hash>/`, `~/.cache` when the
    variable is unset, where the hash is taken from the output directory. Never inside the output
    directory: its `findings/` and `scans/` name the rule the fixer is never shown."
 4. `FIX-AND-VERIFY.md` line 24: replace "Any scanner tool access." with "A shell. Its tools are
@@ -407,7 +407,7 @@ Section 6), then land the fix.
    const c = deps.state.agentCalls.find((x) => x.schemaPointer === '#/$defs/fix');
    const f = res.findings.find((x) => x.patches.length);
    assert.strictEqual(path.basename(c.cwd), `${f.id}-1`);
-   assert.strictEqual(path.dirname(path.dirname(c.cwd)), path.join(CACHE, 'sast-remediate', 'worktrees'));
+   assert.strictEqual(path.dirname(path.dirname(c.cwd)), path.join(CACHE, 'sast-assist', 'worktrees'));
    assert.ok(path.relative(out, c.cwd).startsWith('..'), `${c.cwd} is inside ${out}`);
    for (let k = 1; k <= 4; k++) {
      assert.ok(!fs.existsSync(path.resolve(c.cwd, '../'.repeat(k), 'findings')), `findings reachable at depth ${k}`);
@@ -445,7 +445,7 @@ Section 6), then land the fix.
    `cwd.includes('worktrees/base')` becomes `path.basename(cwd) === 'base'`. Run
    `grep -n "worktrees" test/*.cjs` and update any other hit the same way.
 6. Update the `--dry-run` case to also assert
-   `assert.ok(/worktrees\s+\S+sast-remediate\/worktrees\//.test(text), text);`.
+   `assert.ok(/worktrees\s+\S+sast-assist\/worktrees\//.test(text), text);`.
 
 ### `test/pipeline.real.test.cjs`
 
@@ -480,12 +480,12 @@ cases.
 
 ## 6. Verification
 
-1. `cd skills/sast-remediate && sh test/run-all.sh` ends with `all green`. The pipeline section
+1. `cd skills/sast-assist && sh test/run-all.sh` ends with `all green`. The pipeline section
    reports the new case as `ok`, not `expected-fail`.
-2. `wc -l skills/sast-remediate/bin/run.cjs` prints a number under 1000.
-3. `grep -rn "allowedTools\|'Bash'" skills/sast-remediate/bin` prints nothing.
-4. `node skills/sast-remediate/bin/run.cjs --target=fixtures/vuln-app --dry-run` prints a
-   `worktrees` line under `~/.cache/sast-remediate/worktrees/`.
+2. `wc -l skills/sast-assist/bin/run.cjs` prints a number under 1000.
+3. `grep -rn "allowedTools\|'Bash'" skills/sast-assist/bin` prints nothing.
+4. `node skills/sast-assist/bin/run.cjs --target=fixtures/vuln-app --dry-run` prints a
+   `worktrees` line under `~/.cache/sast-assist/worktrees/`.
 5. `.work/probe/sandbox.txt` exists and its `== Verdict` block shows every call-A gate as PASS.
 
 Mutation checks. Apply each, run the named file, confirm the named case fails, revert.
@@ -515,7 +515,7 @@ Record each mutation and its observed failure line in the handback.
 - The fixer can no longer run tests to check itself, so attempt one is written blind to the suite.
   The harness still runs it, and attempt two receives the typed failure.
 - Worktrees now outlive the output directory: deleting `outDir` leaves them under
-  `~/.cache/sast-remediate/worktrees/`. Nothing cleaned them up before either. Out of scope.
+  `~/.cache/sast-assist/worktrees/`. Nothing cleaned them up before either. Out of scope.
 - The worktree's `.git` file names the target's `.git/worktrees/<name>`; that holds no scanner
   output, and it is outside the cwd anyway.
 - Out of scope: the triage prompt content (triage may see the rule), the `executable` witness

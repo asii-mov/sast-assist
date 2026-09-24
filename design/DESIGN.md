@@ -1,4 +1,4 @@
-# `sast-remediate`: design sketch
+# `sast-assist`: design sketch
 
 Synthesized from four independent candidates. See `SYNTHESIS-NOTE.md` for the arena record
 and `RATIONALE.md` for the reasoning. Grounded in `GROUNDING.md`.
@@ -27,14 +27,14 @@ remaining test is whether the scanner stopped complaining.
 ## 1. Usage (caller's view): written first
 
 ```
-  /sast-remediate .                    # full run, default fix threshold = medium
-  /sast-remediate . --fix-at high      # only high + critical
-  /sast-remediate . --triage-only      # triage + report, touch nothing (CI-safe)
-  /sast-remediate . --scanners codeql
-  /sast-remediate . --scope src/api
-  /sast-remediate .                    # run again: resumes. There is no --resume flag.
+  /sast-assist .                    # full run, default fix threshold = medium
+  /sast-assist . --fix-at high      # only high + critical
+  /sast-assist . --triage-only      # triage + report, touch nothing (CI-safe)
+  /sast-assist . --scanners codeql
+  /sast-assist . --scope src/api
+  /sast-assist .                    # run again: resumes. There is no --resume flag.
 
-Output, outside the target repo, at ~/sast-remediate/<repo>/run-<N>/:
+Output, outside the target repo, at ~/sast-assist/<repo>/run-<N>/:
   REMEDIATION.md      what was fixed, what was not, and why. Read this first.
   HANDOFF.md          findings a human must resolve, each with its contract and a
                       failing witness test already committed on a retained branch.
@@ -49,7 +49,7 @@ In the target repo:
 ### Call site 1: the ordinary case
 
 ```
-> /sast-remediate .
+> /sast-assist .
 
 Scanning (semgrep, codeql) ................ 341 raw results
 Normalized ................................ 268 observations
@@ -74,7 +74,7 @@ The operator makes **one** decision: review and merge the integration branch. No
 ### Call site 2: resume after a crash
 
 ```
-> /sast-remediate .
+> /sast-assist .
 
 Resuming run-4 (96 findings on disk).
   ingested 0 · triaged 96 · gated 96 · fixing 3 · verifying 0 · done 93
@@ -89,7 +89,7 @@ stored, so nothing can desync. Leases distinguish a crashed agent from a slow on
 ### Call site 3: CI
 
 ```yaml
-- run: claude -p "/sast-remediate . --fix-at high --budget 60 --json" > result.json
+- run: claude -p "/sast-assist . --fix-at high --budget 60 --json" > result.json
 - run: test "$(jq '.unverified_fixes' result.json)" = "0"
 ```
 
@@ -110,7 +110,7 @@ fan-out. Per GROUNDING Constraint 5.
 ## 2. Module map
 
 ```
-skills/sast-remediate/
+skills/sast-assist/
   SKILL.md                    operator commands, modes, stage machine, policy defaults
   references/
     INGEST.md                 scanner invocation + normalization  [scanner-format knowledge]
@@ -903,7 +903,7 @@ function guardDiff(diff: UnifiedDiff, c: SecurityContract, repo: RepoFacts): Gua
 //    changes the type sequence and is NOT caught here. It is caught by the differential
 //    witness, which exercises behavior instead of shape.
 //  - touched {docker-compose.y*ml, Procfile, the harness `up`/`ready` target, the
-//    [harness] block of .sast-remediate.toml} -> app_harness_modified
+//    [harness] block of .sast-assist.toml} -> app_harness_modified
 //    (a patch that edits how the app boots can make a dynamic witness pass without
 //     fixing anything — the same defeat as editing scanner config)
 //  - c.witness.tier !== "argued" and the diff adds no witness file -> witness_missing
@@ -938,7 +938,7 @@ function discoverAppHarness(repo: RepoSnapshot): AppHarness[] {
 //  config.ru / bin/rails                                -> "rails"
 //  main.go with net/http ListenAndServe                 -> "go_run"
 //  src/main/resources/application.y*ml                  -> "spring_boot"
-//  .sast-remediate.toml [harness] block                 -> "custom" (always wins)
+//  .sast-assist.toml [harness] block                 -> "custom" (always wins)
 //  For each: derive `ready` from a health/readiness route if one exists, else
 //  GET / expecting any < 500. ALWAYS bind an ephemeral port on loopback; never a fixed
 //  port, never 0.0.0.0. If no candidate -> [] and the dynamic tier is unavailable.

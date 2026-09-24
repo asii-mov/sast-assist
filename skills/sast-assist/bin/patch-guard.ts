@@ -15,7 +15,7 @@ const SCANNER_CONFIG = [
 const IGNORE_FILES = [/(^|\/)\.gitignore$/, /(^|\/)\.semgrepignore$/, /(^|\/)\.codeqlignore$/];
 const HARNESS_FILES = [
   /(^|\/)docker-compose(\.\w+)?\.ya?ml$/, /(^|\/)Procfile$/,
-  /(^|\/)\.sast-remediate\.toml$/, /(^|\/)Dockerfile$/,
+  /(^|\/)\.sast-assist\.toml$/, /(^|\/)Dockerfile$/,
 ];
 const MANIFESTS = [
   /(^|\/)package\.json$/, /(^|\/)package-lock\.json$/, /(^|\/)yarn\.lock$/,

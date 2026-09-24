@@ -5,7 +5,7 @@
 A set of LLM skills (Claude Code / agent-neutral) that wrap existing Semgrep + CodeQL
 scanning with: parallel false-positive triage, a severity threshold gate, automated
 patching, and post-patch verification. The working directory
-`/home/asiimov/Projects/code-scanning` is empty. This is greenfield. There is no
+`/home/asiimov/Projects/sast-assist` is empty. This is greenfield. There is no
 surrounding codebase to integrate with, so Phase A grounds in the **external
 contracts** the design must honor: the two scanners' output formats, and the prior-art
 skill the user pointed at.
