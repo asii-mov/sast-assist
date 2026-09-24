@@ -168,7 +168,8 @@ function describeClaim(c: ClaimedSeverity): string {
 // another's at the same site, and a site only one scanner ever reported.
 function scannerDisagreements(findings: FindingRecord[]) {
   const out: { finding: string; file: string; line: number; detail: string }[] = [];
-  for (const f of findings) {
+  // A split parent's sites are its children's, so they are read once, from the children.
+  for (const f of findings.filter((x) => x.disposition?.state !== 'split')) {
     for (const s of f.sites) {
       const obs = s.observations;
       if (obs.length < 2) {
@@ -210,7 +211,7 @@ function renderRemediation(findings: FindingRecord[], meta: RunMeta): string {
   for (const f of of('rejected').filter((x) => !x.disposition.policy)) {
     rejected.set(f.disposition.reason, [...(rejected.get(f.disposition.reason) || []), f]);
   }
-  const triagedCount = findings.filter((f) => f.triage).length;
+  const triagedCount = findings.filter((f) => f.triage || f.disposition).length;
   const L: string[] = [];
 
   L.push(`# Remediation report: ${code(meta.target)}`, '');
@@ -232,6 +233,10 @@ function renderRemediation(findings: FindingRecord[], meta: RunMeta): string {
   }
   L.push(`- Findings processed: ${triagedCount} of ${findings.length} `
     + `(${findings.length - triagedCount} not triaged yet)`);
+  for (const f of of('split')) {
+    L.push(`- ${code(f.id)} was split by triage into ${f.disposition.children.map((c) => code(c.id)).join(', ')}, `
+      + 'each reported under its own id');
+  }
   if (meta.dropped && meta.dropped.length) {
     L.push(`- Raw scanner results dropped before analysis: ${meta.dropped.length} `
       + '(path missing or outside the repository root)');
@@ -427,6 +432,18 @@ function renderHandoff(findings: FindingRecord[], meta: RunMeta): string {
       L.push(`- ${code(f.id)}: ${f.triage.blocker.missing_fact}`);
       L.push(`  Resolve by ${code(f.triage.blocker.resolve_by)}: ${f.triage.blocker.plan}`);
       L.push('  This is a hypothesis, not a confirmed vulnerability, and carries no severity.');
+    }
+  }
+
+  L.push('', '**Split again.**', '');
+  const splitAgain = of('deferred');
+  if (!splitAgain.length) {
+    L.push('No finding split out of another asked to split again this run.');
+  } else {
+    for (const f of splitAgain) {
+      const d = f.disposition;
+      L.push(`- ${code(f.id)}, split out of ${code(d.split_from)}, asked to split again. Decide its enforcement points by hand.`);
+      for (const g of d.groups) L.push(`  Lines ${g.site_lines.join(', ')}: ${g.why}`);
     }
   }
 

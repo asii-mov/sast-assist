@@ -25,9 +25,10 @@ import type { Disposition, Evaluation, FindingRecord, Obligation, ObligationResu
 import type { Baseline, ScanConfig, ScanDeps, ScannerStatus, SyncExec } from './scan.ts';
 import type { Policy } from './gate.ts';
 import type { AgentFailure } from './resume.ts';
+import type { Split } from './split.ts';
 import type { AgentOpts, AgentResult, Provider } from './agent.ts';
 import type { AppHarness } from './app-harness.ts';
-import type { AgentAudit, AgentFix, AgentTriage, SecurityContract, Severity, TaintFlow, Witness } from '../schema/types.ts';
+import type { AgentAudit, AgentFix, AgentTriage, Finding, SecurityContract, Severity, TaintFlow, Witness } from '../schema/types.ts';
 
 // run-metadata.json: written once per run by the parent, read by the report and by resume.
 type RunMeta = {
@@ -46,6 +47,7 @@ import { defaultOutDir, readRecorded, mergeExisting, clearAttempt, incompleteRea
 import { assertNoLeak, leakError, recordTerms, authoredProse } from './leak-guard.ts';
 import { runAgent, envFor, isProvider, PROVIDERS } from './agent.ts';
 import { renderRemediation, renderHandoff } from './report.ts';
+import { applySplit } from './split.ts';
 import { witnessObligations } from './witness-run.ts';
 import { discoverAppHarness } from './app-harness.ts';
 
@@ -67,7 +69,7 @@ type Ctx = {
   opts: Opts; deps: Deps; target: string; outDir: string; runId: string; worktreeRoot: string;
   git: Git; base: string | null; save: (f: FindingRecord) => void; testCommand: string | null;
   appHarness: AppHarness[]; buildCommand: null; lintCommand: null; witnessTiers: string[];
-  baseline: Baseline; baseTree?: string;
+  baseline: Baseline; split: Split; baseTree?: string;
 };
 // Fixing needs a commit to branch from, so the fix and verify stages only ever see this.
 type FixCtx = Ctx & { base: string };
@@ -232,12 +234,17 @@ function discoverTestCommand(root: string): string | null {
 
 function normalizeAndValidate(raw: Parameters<typeof normalize>[0], target: string, runId: string) {
   const res = normalize(raw, makeRepo(target), runId);
-  const errs = validate(readSchema(FINDING_SCHEMA), res.findings, path.dirname(FINDING_SCHEMA));
-  if (errs.length) {
-    throw new Error(`normalized findings do not validate:\n  ${errs.slice(0, 10).join('\n  ')}`);
-  }
-  // Validated just above against the schema FindingRecord is built from.
-  return { ...res, findings: res.findings as FindingRecord[] };
+  const valid = (findings: Finding[]) => {
+    const errs = validate(readSchema(FINDING_SCHEMA), findings, path.dirname(FINDING_SCHEMA));
+    if (errs.length) throw new Error(`normalized findings do not validate:\n  ${errs.slice(0, 10).join('\n  ')}`);
+    // Validated just above against the schema FindingRecord is built from.
+    return findings as FindingRecord[];
+  };
+  const split: Split = (id, groups) => {
+    const r = res.split(id, groups);
+    return r.ok ? { ok: true, children: valid(r.children) } : r;
+  };
+  return { ...res, findings: valid(res.findings), split };
 }
 
 // ------------------------------------------------------------- 3. pre-resolve
@@ -377,11 +384,11 @@ const TRIAGE_TOOLS = ['Read', 'Grep', 'Glob'];
 async function triageAll(findings: FindingRecord[], ctx: Ctx) {
   const queue = order(findings).filter((f) => stageOf(f, ctx.opts.verify) === 'triage');
   const budget = ctx.opts.maxFindings;
-  const doing = queue.slice(0, budget);
-  const deferred = queue.slice(budget).map((f) => f.id);
   const failed: AgentFailure[] = [];
 
-  for (const f of doing) {
+  // A split appends its children to the queue, so they are triaged in this run within the budget.
+  for (let i = 0; i < queue.length && i < budget; i++) {
+    const f = queue[i];
     const res = await ask(ctx, '#/$defs/triage', {
       prompt: buildTriagePrompt(f, ctx),
       cwd: ctx.target, model: ctx.opts.model, timeoutMs: ctx.opts.timeoutMs,
@@ -392,15 +399,16 @@ async function triageAll(findings: FindingRecord[], ctx: Ctx) {
       failed.push({ id: f.id, stage: 'triage', reason: res.reason });
       continue;
     } else if ('split' in res.data) {
-      // Re-emitting the split sites as separate findings is not implemented; the record is
-      // handed to a human rather than silently triaged under a contract that fits neither half.
-      f.disposition = { state: 'deferred', reason: 'split_requested', detail: res.data.split };
+      const r = applySplit(f, res.data.split, ctx.split);
+      if ('failed' in r) { failed.push({ id: f.id, stage: 'triage', reason: r.failed }); continue; }
+      for (const c of r.children) { findings.push(c); queue.push(c); ctx.save(c); }
     } else {
       f.triage = res.data;
     }
     ctx.save(f);
   }
-  return { triaged: doing.length - failed.length, deferred, failed };
+  const deferred = queue.slice(budget).map((f) => f.id);
+  return { triaged: Math.min(queue.length, budget) - failed.length, deferred, failed };
 }
 
 // ------------------------------------------------------------------- 5. gate
@@ -890,7 +898,7 @@ async function run(opts: Opts, deps: Deps = realDeps()): Promise<RunResult> {
   const norm = normalizeAndValidate(raw, target, runId);
   const findings = norm.findings;
   const save = makeSaver(outDir);
-  const resumed = mergeExisting(findings, outDir);
+  const resumed = mergeExisting(findings, outDir, norm.split);
 
   const testCommand = discoverTestCommand(target);
   let appHarness: AppHarness[] = [];
@@ -904,7 +912,7 @@ async function run(opts: Opts, deps: Deps = realDeps()): Promise<RunResult> {
     opts, deps, target, outDir, runId, worktreeRoot, git, base, save, testCommand, appHarness,
     buildCommand: null, lintCommand: null,
     witnessTiers: dynamicOffered ? ['dynamic', 'argued'] : ['argued'],
-    baseline: baselineOf(raw, findings, opts.scanConfig, scanners),
+    baseline: baselineOf(raw, findings, opts.scanConfig, scanners), split: norm.split,
   };
 
   // 3. pre-resolve

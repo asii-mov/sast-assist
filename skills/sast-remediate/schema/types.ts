@@ -16,6 +16,7 @@ export type Finding = {
   patches: Record<string, unknown>[];
   disposition: null | Record<string, unknown>;
   prior: null | Record<string, unknown>;
+  split_from: null | string;
 };
 
 export type InvariantClass = "injection.sql" | "injection.command" | "injection.code" | "injection.template" | "injection.path" | "injection.ldap" | "injection.xml" | "injection.log" | "xss.reflected" | "xss.stored" | "xss.dom" | "deserialization.unsafe" | "ssrf" | "redirect.open" | "authz.missing" | "authn.weak" | "session.weak" | "crypto.weak" | "crypto.misuse" | "secret.hardcoded" | "randomness.weak" | "race.toctou" | "memory.unsafe" | "dos.uncontrolled" | "disclosure.sensitive" | "config.insecure" | "other";

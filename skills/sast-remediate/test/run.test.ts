@@ -570,12 +570,153 @@ t('a failed triage call leaves the finding open for the next run', async () => {
     String(res.meta.incomplete_reason));
 });
 
-t('a split is escalated rather than triaged under a contract that fits neither half', async () => {
-  const { res } = await triageOnlyRun({
-    triage: () => ({ ok: true, data: { split: [{ site_lines: [9], why: 'a' }, { site_lines: [10], why: 'b' }] } }),
+// A copy of the fixture app with a third path.join call, and scans that flag lines 5, 9 and 18
+// of files.js, so the path finding holds three sites.
+function splitTarget() {
+  const target = path.join(tmp(), 'app');
+  fs.cpSync(REPO, target, { recursive: true });
+  fs.appendFileSync(path.join(target, 'src/routes/files.js'), "const OTHER = path.join(ROOT, 'other');\n");
+  const scans = tmp();
+  const sg = readJson(path.join(ROOT, 'test/fixtures/semgrep.json'));
+  const hit = must(sg.results.find((r: any) => r.path === 'src/routes/files.js'), 'the semgrep path result');
+  for (const line of [5, 18]) sg.results.push({ ...structuredClone(hit), start: { ...hit.start, line } });
+  fs.writeFileSync(path.join(scans, 'semgrep.json'), JSON.stringify(sg));
+  fs.copyFileSync(path.join(ROOT, 'test/fixtures/codeql.sarif'), path.join(scans, 'codeql.sarif'));
+  return { target, scans };
+}
+
+const PARENT = 'f_6ed43412e0d9b09d';
+const CHILD_A = 'f_661edad58b3c6820';
+const CHILD_B = 'f_1f4cc0e4d7fb7337';
+const PARTS = [
+  { site_lines: [5, 18], why: 'both join ROOT with a constant, so neither reaches request input' },
+  { site_lines: [9], why: 'the request name reaches the join' },
+];
+// The files.js site lines a triage prompt names, read from its candidate section.
+const promptSites = (prompt: string) => [...(/sites:\n([\s\S]*?)\n\n# Flow/.exec(prompt)?.[1] ?? '')
+  .matchAll(/^ {2}src\/routes\/files\.js:(\d+)/gm)].map((m) => Number(m[1]));
+
+// The parent answers `parent`, each child answers `child(its lines)`, and every other finding is refuted.
+function splitAgent(parent: unknown, child: (lines: number[]) => unknown = () => ({ ok: true, data: notExploitable() })) {
+  return (opts: AgentOpts) => {
+    const lines = promptSites(opts.prompt);
+    if (lines.length === 3) return parent;
+    return lines.length ? child(lines) : { ok: true, data: notExploitable() };
+  };
+}
+
+async function splitRun(out: string, triage: (opts: AgentOpts) => unknown, app = splitTarget()) {
+  const opts = baseOpts(); opts.target = app.target; opts.scans = app.scans; opts.out = out; opts.triageOnly = true;
+  const deps = makeDeps({ agents: { '#/$defs/triage': triage } });
+  deps.renderHandoff = renderHandoff;
+  deps.renderRemediation = renderRemediation;
+  return { res: await runFull(opts, deps), deps, app };
+}
+const byId = (findings: FindingRecord[], id: string) => must(findings.find((f) => f.id === id), id);
+const lines = (f: FindingRecord) => f.sites.map((s) => s.locus.line_at_scan);
+
+t('a split turns the parent into one finding per part, each triaged in the same run', async () => {
+  const out = path.join(tmp(), 'run-1');
+  const { res, deps } = await splitRun(out, splitAgent({ ok: true, data: { split: PARTS } }));
+  assert.deepStrictEqual(byId(res.findings, PARENT).disposition, {
+    state: 'split',
+    children: [{ id: CHILD_A, ...PARTS[0] }, { id: CHILD_B, ...PARTS[1] }],
   });
-  assert.strictEqual(res.findings[0].disposition?.state, 'deferred');
-  assert.strictEqual(settled(res.findings[0], 'deferred').reason, 'split_requested');
+  const a = byId(res.findings, CHILD_A);
+  const b = byId(res.findings, CHILD_B);
+  assert.deepStrictEqual([a.split_from, lines(a), a.flow.kind, a.disposition?.state], [PARENT, [5, 18], 'sink_only', 'rejected']);
+  assert.deepStrictEqual([b.split_from, lines(b), b.flow.kind, b.disposition?.state], [PARENT, [9], 'traced', 'rejected']);
+  assert.deepStrictEqual(deps.state.agentCalls.map((c) => promptSites(c.prompt)), [[], [5, 9, 18], [], [5, 18], [9]]);
+  assert.strictEqual(res.meta.run_status, 'complete');
+  assert.strictEqual(readJson(path.join(out, 'findings', `${CHILD_B}.json`)).split_from, PARENT);
+  const report = fs.readFileSync(path.join(out, 'REMEDIATION.md'), 'utf8');
+  assert.ok(report.includes(`- \`${PARENT}\` was split by triage into \`${CHILD_A}\`, \`${CHILD_B}\`, `
+    + 'each reported under its own id\n'), report);
+  assert.ok(report.includes('- Findings processed: 5 of 5 (0 not triaged yet)'), report);
+});
+
+t('the children keep their ids across runs, and a re-run asks only about an undecided child', async () => {
+  const out = path.join(tmp(), 'run-1');
+  const app = splitTarget();
+  const failB = (l: number[]) => (l[0] === 9 ? { ok: false, reason: 'rate limited', raw: '' } : { ok: true, data: notExploitable() });
+  const first = await splitRun(out, splitAgent({ ok: true, data: { split: PARTS } }, failB), app);
+  assert.strictEqual(first.res.meta.run_status, 'incomplete');
+  assert.deepStrictEqual(first.res.meta.agent_failures, [{ id: CHILD_B, stage: 'triage', reason: 'rate limited' }]);
+
+  const second = await splitRun(out, splitAgent({ ok: false, reason: 'the parent must not be asked again', raw: '' }), app);
+  assert.deepStrictEqual(second.deps.state.agentCalls.map((c) => promptSites(c.prompt)), [[9]]);
+  assert.strictEqual(second.res.meta.run_status, 'complete');
+
+  const third = await splitRun(out, splitAgent({ ok: false, reason: 'nothing may be asked', raw: '' }), app);
+  assert.strictEqual(third.deps.state.agentCalls.length, 0);
+  const ids = (r: typeof first) => r.res.findings.map((f) => f.id).sort();
+  assert.deepStrictEqual(ids(third), ids(first));
+  assert.deepStrictEqual(ids(third).filter((id) => id === CHILD_A || id === CHILD_B), [CHILD_B, CHILD_A].sort());
+  assert.strictEqual(third.res.meta.counts.resumed, 5);
+  assert.strictEqual(third.res.meta.run_status, 'complete');
+});
+
+t('a finding split out of another that asks to split again is deferred to a human', async () => {
+  const out = path.join(tmp(), 'run-1');
+  const again = [{ site_lines: [5], why: 'the module constant' }, { site_lines: [18], why: 'the other constant' }];
+  const { res } = await splitRun(out, splitAgent({ ok: true, data: { split: PARTS } },
+    (l) => (l.length === 2 ? { ok: true, data: { split: again } } : { ok: true, data: notExploitable() })));
+  assert.deepStrictEqual(byId(res.findings, CHILD_A).disposition,
+    { state: 'deferred', reason: 'split_again', split_from: PARENT, groups: again });
+  assert.strictEqual(res.findings.length, 5, 'a second split derives no findings');
+  const handoff = fs.readFileSync(path.join(out, 'HANDOFF.md'), 'utf8');
+  assert.ok(handoff.includes(`- \`${CHILD_A}\`, split out of \`${PARENT}\`, asked to split again. `
+    + 'Decide its enforcement points by hand.\n  Lines 5: the module constant\n  Lines 18: the other constant\n'), handoff);
+});
+
+t('children count against --max-findings, and a child past the budget waits for the next run', async () => {
+  const out = path.join(tmp(), 'run-1');
+  const app = splitTarget();
+  const opts = baseOpts(); opts.target = app.target; opts.scans = app.scans; opts.out = out; opts.triageOnly = true;
+  opts.maxFindings = 4;
+  const deps = makeDeps({ agents: { '#/$defs/triage': splitAgent({ ok: true, data: { split: PARTS } }) } });
+  const res = await runFull(opts, deps);
+  assert.strictEqual(deps.state.agentCalls.length, 4);
+  assert.strictEqual(res.meta.counts.deferred, 1);
+  assert.strictEqual(byId(res.findings, CHILD_B).triage, null);
+  assert.strictEqual(res.meta.run_status, 'incomplete');
+  const next = await splitRun(out, splitAgent({ ok: false, reason: 'the parent must not be asked again', raw: '' }), app);
+  assert.deepStrictEqual(next.deps.state.agentCalls.map((c) => promptSites(c.prompt)), [[9]]);
+  assert.strictEqual(next.res.meta.run_status, 'complete');
+});
+
+t('a resumed run whose scan no longer holds the split sites asks about the parent again', async () => {
+  const out = path.join(tmp(), 'run-1');
+  const app = splitTarget();
+  await splitRun(out, splitAgent({ ok: true, data: { split: PARTS } }), app);
+  const sg = readJson(path.join(app.scans, 'semgrep.json'));
+  sg.results = sg.results.filter((r: any) => r.start.line !== 18);
+  fs.writeFileSync(path.join(app.scans, 'semgrep.json'), JSON.stringify(sg));
+  const next = await splitRun(out, (opts) => (promptSites(opts.prompt).length ? { ok: true, data: notExploitable() }
+    : { ok: false, reason: 'only the parent is open', raw: '' }), app);
+  assert.deepStrictEqual(next.deps.state.agentCalls.map((c) => promptSites(c.prompt)), [[5, 9]]);
+  assert.deepStrictEqual(next.res.findings.map((f) => f.id).sort(), ['f_6ed43412e0d9b09d', 'f_d72e46f6d1ec2eb0', 'f_e2981bd8a7b838b9']);
+  assert.strictEqual(byId(next.res.findings, PARENT).disposition?.state, 'rejected');
+});
+
+t('an invalid split is an agent failure, and the next run asks again', async () => {
+  const cases: [string, unknown[], string][] = [
+    ['unknown line', [{ site_lines: [5, 18], why: 'a' }, { site_lines: [7], why: 'b' }], `invalid_split: line 7 is not a site of ${PARENT}`],
+    ['overlap', [{ site_lines: [5, 9], why: 'a' }, { site_lines: [9, 18], why: 'b' }], 'invalid_split: line 9 is in more than one part'],
+    ['uncovered site', [{ site_lines: [5], why: 'a' }, { site_lines: [9], why: 'b' }], 'invalid_split: no part holds the site(s) at line 18'],
+  ];
+  for (const [label, split, reason] of cases) {
+    const out = path.join(tmp(), 'run-1');
+    const app = splitTarget();
+    const { res } = await splitRun(out, splitAgent({ ok: true, data: { split } }), app);
+    const parent = byId(res.findings, PARENT);
+    assert.deepStrictEqual([parent.disposition, parent.triage, res.findings.length], [null, null, 3], label);
+    assert.deepStrictEqual(res.meta.agent_failures, [{ id: PARENT, stage: 'triage', reason }], label);
+    assert.strictEqual(res.meta.run_status, 'incomplete', label);
+    const next = await splitRun(out, splitAgent({ ok: true, data: notExploitable() }), app);
+    assert.deepStrictEqual(next.deps.state.agentCalls.map((c) => promptSites(c.prompt)), [[5, 9, 18]], label);
+    assert.strictEqual(next.res.meta.run_status, 'complete', label);
+  }
 });
 
 t('re-running the same command is the resume path and spends nothing twice', async () => {

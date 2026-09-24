@@ -99,10 +99,10 @@ jobs:
         shell: bash
         run: |
           find "$RUNNER_TEMP/sast/findings" -name '*.json' -exec cat {} + |
-            jq -se '[.[] | select(.gate == null or .gate.action == "fix" or .disposition.state == "deferred")] | length == 0'
+            jq -se '[.[] | select(.disposition.state != "split") | select(.gate == null or .gate.action == "fix" or .disposition.state == "deferred")] | length == 0'
 ```
 
-The last step fails the build when a finding is confirmed at or above the threshold or left undecided by a failed agent call, `--max-findings` or a split request. A clean scan passes. `shell: bash` makes the step fail if the output directory is missing.
+The last step fails the build when a finding is confirmed at or above the threshold or left undecided by a failed agent call or `--max-findings`. A finding that triage split into parts passes, and each part is judged on its own. A part that asks to split again fails the build, because a human has to decide it. A clean scan passes. `shell: bash` makes the step fail if the output directory is missing.
 
 For the fix stage, change the workflow as follows:
 

@@ -9,6 +9,7 @@
 
 import fs from 'fs';
 import type { AgentAudit, Finding, Severity } from '../schema/types.ts';
+import type { SplitGroup } from './normalize.ts';
 import type { Rescan } from './scan.ts';
 
 // ---------------------------------------------------------------------- stage
@@ -100,7 +101,8 @@ type Disposition =
   | { state: 'rejected'; reason: string; policy: boolean }
   | { state: 'undecidable'; missing_fact: string; resolve_by: string }
   | { state: 'below_threshold'; severity: Severity; threshold?: Severity }
-  | { state: 'deferred'; reason: string; detail?: unknown }
+  | { state: 'deferred'; reason: 'split_again'; split_from: string; groups: SplitGroup[] }
+  | { state: 'split'; children: (SplitGroup & { id: string })[] }
   | { state: 'fix_declined'; reason?: string; branch: string }
   | { state: 'fix_failed'; branch: string | null; attempts: number; outcome: Patch['outcome']; detail?: string;
       failed: Obligation[]; missing: Obligation[]; worktree: string }

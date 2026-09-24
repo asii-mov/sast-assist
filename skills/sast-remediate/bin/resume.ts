@@ -10,6 +10,7 @@ import { isVerifyLevel } from './stage.ts';
 import { isRecord } from './validate.ts';
 import type { FindingRecord, VerifyLevel } from './stage.ts';
 import type { ScanConfig, SyncExec } from './scan.ts';
+import type { Split } from './split.ts';
 
 const readJson = (f: string): unknown => JSON.parse(fs.readFileSync(f, 'utf8'));
 
@@ -53,7 +54,7 @@ function readRecorded(metaFile: string): { level: VerifyLevel | null; scanConfig
 // them, so a call that died on a rate limit is asked again instead of standing as a verdict.
 function reopenAgentFailure(r: FindingRecord): FindingRecord {
   const d = r.disposition;
-  if (d && d.state === 'deferred' && d.reason === 'triage_agent_failed') return { ...r, disposition: null };
+  if (d && d.state === 'deferred' && (d.reason as string) === 'triage_agent_failed') return { ...r, disposition: null };
   // `agent_failed` is an outcome only older runs wrote, so it is compared as a plain string.
   if (d && d.state === 'fix_failed' && (d.outcome as string | null) === 'agent_failed') {
     return { ...r, disposition: null, patches: (r.patches || []).slice(0, -1) };
@@ -62,8 +63,10 @@ function reopenAgentFailure(r: FindingRecord): FindingRecord {
 }
 
 // Records already on disk win, so triage, gate and patches survive a re-run and stageOf decides
-// what each record still needs. This is the whole of resume.
-function mergeExisting(findings: FindingRecord[], outDir: string): number {
+// what each record still needs. This is the whole of resume. Normalizing rebuilds only the
+// parents, so the children of each saved split are derived again from its recorded parts and
+// then merged the same way.
+function mergeExisting(findings: FindingRecord[], outDir: string, split: Split): number {
   const dir = path.join(outDir, 'findings');
   if (!fs.existsSync(dir)) return 0;
   const prior = new Map<string, FindingRecord>();
@@ -73,13 +76,21 @@ function mergeExisting(findings: FindingRecord[], outDir: string): number {
     try { const r = readJson(path.join(dir, file)) as FindingRecord; prior.set(r.id, r); } catch { /* a truncated record is re-derived */ }
   }
   let n = 0;
-  findings.forEach((f, i) => {
+  const merge = (f: FindingRecord): FindingRecord => {
     const saved = prior.get(f.id);
-    if (!saved) return;
+    if (!saved) return f;
     const p = reopenAgentFailure(saved);
-    findings[i] = { ...f, triage: p.triage, gate: p.gate, patches: p.patches || [], disposition: p.disposition, prior: p.prior };
     n++;
-  });
+    return { ...f, triage: p.triage, gate: p.gate, patches: p.patches || [], disposition: p.disposition, prior: p.prior };
+  };
+  for (const f of findings.splice(0).map(merge)) {
+    findings.push(f);
+    if (f.disposition?.state !== 'split') continue;
+    const r = split(f.id, f.disposition.children);
+    // An --out resumed on another commit can scan a different site set than the split named.
+    if (!r.ok) { f.disposition = null; continue; }
+    findings.push(...r.children.map(merge));
+  }
   return n;
 }
 

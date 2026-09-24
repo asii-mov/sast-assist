@@ -11,7 +11,8 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["schema_version", "id", "run_id", "invariant_class", "cluster", "sites",
-                   "flow", "context", "lease", "triage", "gate", "patches", "disposition", "prior"],
+                   "flow", "context", "lease", "triage", "gate", "patches", "disposition", "prior",
+                   "split_from"],
       "properties": {
         "schema_version": { "const": 1 },
         "id": { "type": "string", "pattern": "^f_[0-9a-f]{16}$" },
@@ -26,7 +27,11 @@
         "gate": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/gate_decision" }] },
         "patches": { "type": "array", "maxItems": 2, "items": { "type": "object" } },
         "disposition": { "oneOf": [{ "type": "null" }, { "type": "object" }] },
-        "prior": { "oneOf": [{ "type": "null" }, { "type": "object" }] }
+        "prior": { "oneOf": [{ "type": "null" }, { "type": "object" }] },
+        "split_from": {
+          "description": "The finding a triage split this one out of. A finding with a parent may not split again.",
+          "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^f_[0-9a-f]{16}$" }]
+        }
       }
     },
 

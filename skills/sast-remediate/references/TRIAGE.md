@@ -156,6 +156,9 @@ tool that would notice it. The schema rejects scanner names here.
 ## Splitting
 
 If the sites in one finding need different enforcement points, they are not one root cause.
-Return `{"split": [{"sites": [...], "why": "..."}]}` instead of a verdict. One split per finding
-per run. A second split escalates to the human queue. No code tracks the split count; that
-bookkeeping belongs to the parent and does not exist yet.
+Return `{"split": [{"site_lines": [...], "why": "..."}]}` instead of a verdict, one part per
+enforcement point. A line names every site on it. Between them the parts must hold every site
+exactly once, or the answer counts as a failed call and the finding is asked about again.
+
+Each part becomes its own finding and is triaged in the same run. A finding that was split out of
+another cannot split again. If it asks to, it goes to a human.

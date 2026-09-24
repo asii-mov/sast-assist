@@ -11,7 +11,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import type { ClaimedSeverity, Finding, FlowStep, InvariantClass, Locus, Observation, TaintFlow } from '../schema/types.ts';
+import type { AgentTriage, ClaimedSeverity, Finding, FlowStep, InvariantClass, Locus, Observation, TaintFlow } from '../schema/types.ts';
 
 // Scanner output as read from disk, before normalize() parses it.
 type RawScans = { semgrep?: unknown; codeql?: unknown };
@@ -369,8 +369,13 @@ function selectFlow(flows: (RawFlow | null)[], anchorSite: FoldedSite, repo: Rep
   };
 }
 
-function foldFindings(sites: FoldedSite[], repo: Repo, runId: string): Finding[] {
-  const groups: { key: { invariant_class: InvariantClass; sink_symbol: string | null; source_class: null }; sites: FoldedSite[] }[] = [];
+type ClusterKey = Finding['cluster'];
+type Cluster = { key: ClusterKey; sites: FoldedSite[] };
+type SplitGroup = Extract<AgentTriage, { split: unknown }>['split'][number];
+type SplitResult<F> = { ok: true; children: F[] } | { ok: false; reason: string };
+
+function foldFindings(sites: FoldedSite[], repo: Repo): Cluster[] {
+  const groups: Cluster[] = [];
   for (const site of sites) {
     const callee = extractCallee(repo.line(site.locus.file, site.locus.line_at_scan));
     const key = { invariant_class: site.klass, sink_symbol: callee, source_class: null };
@@ -382,37 +387,64 @@ function foldFindings(sites: FoldedSite[], repo: Repo, runId: string): Finding[]
     if (hit) hit.sites.push(site);
     else groups.push({ key, sites: [site] });
   }
+  return groups;
+}
 
-  return groups.map((g) => {
-    const anchor = g.sites[0];
-    const flows = g.sites.flatMap((s) => s.flows);
-    const flow = selectFlow(flows, anchor, repo);
-    const material = [
-      g.key.invariant_class,
-      g.key.sink_symbol ?? '',
-      anchor.locus.file,
-      anchor.locus.sink_digest,
-    ].join('\u0000');
-    const ls = repo.lines(anchor.locus.file) || [];
-    const from = Math.max(0, anchor.locus.line_at_scan - 12);
-    const excerpt = ls.slice(from, anchor.locus.line_at_scan + 12).join('\n');
+// Everything that depends on the site set is derived here, so a finding split out of another
+// gets its own anchor, flow and excerpt rather than its parent's.
+function buildFinding(g: Cluster, repo: Repo, runId: string, id: string, splitFrom: string | null): Finding {
+  const anchor = g.sites[0];
+  const ls = repo.lines(anchor.locus.file) || [];
+  const from = Math.max(0, anchor.locus.line_at_scan - 12);
+  const excerpt = ls.slice(from, anchor.locus.line_at_scan + 12).join('\n');
+  return {
+    schema_version: 1,
+    id,
+    run_id: runId,
+    invariant_class: g.key.invariant_class,
+    cluster: g.key,
+    sites: g.sites
+      .map((s) => ({ locus: s.locus, observations: [...s.observations].sort((a, b) =>
+        a.scanner.localeCompare(b.scanner) || a.rule_id.localeCompare(b.rule_id)) }))
+      .sort((a, b) => a.locus.line_at_scan - b.locus.line_at_scan),
+    flow: selectFlow(g.sites.flatMap((s) => s.flows), anchor, repo),
+    context: {
+      scan_commit: null,
+      source_hash: sha256(excerpt),
+      enclosing_excerpt: excerpt,
+    },
+    lease: null, triage: null, gate: null, patches: [], disposition: null, prior: null, split_from: splitFrom,
+  };
+}
 
-    return {
-      schema_version: 1,
-      id: `f_${sha256(material).slice(0, 16)}`,
-      run_id: runId,
-      invariant_class: g.key.invariant_class,
-      cluster: g.key,
-      sites: g.sites.map((s) => ({ locus: s.locus, observations: s.observations })),
-      flow,
-      context: {
-        scan_commit: null,
-        source_hash: sha256(excerpt),
-        enclosing_excerpt: excerpt,
-      },
-      lease: null, triage: null, gate: null, patches: [], disposition: null, prior: null,
-    };
-  });
+function clusterId(g: Cluster): string {
+  const anchor = g.sites[0];
+  const material = [g.key.invariant_class, g.key.sink_symbol ?? '', anchor.locus.file, anchor.locus.sink_digest].join('\u0000');
+  return `f_${sha256(material).slice(0, 16)}`;
+}
+
+// A triage split names each part by the lines of its sites. A line names every site of the
+// parent on it, so the parts must be disjoint and cover the parent between them. The child id
+// hashes the parent id and the part's lines, so deriving it again from the saved split gives
+// the same id.
+function splitFinding(parentId: string, cluster: Cluster, groups: SplitGroup[], repo: Repo, runId: string): SplitResult<Finding> {
+  const lineOf = (s: FoldedSite) => s.locus.line_at_scan;
+  const claimed = new Set<number>();
+  const children: Finding[] = [];
+  for (const g of groups) {
+    const lines = [...new Set(g.site_lines)].sort((a, b) => a - b);
+    for (const l of lines) {
+      if (claimed.has(l)) return { ok: false, reason: `line ${l} is in more than one part` };
+      if (!cluster.sites.some((s) => lineOf(s) === l)) return { ok: false, reason: `line ${l} is not a site of ${parentId}` };
+      claimed.add(l);
+    }
+    const sites = cluster.sites.filter((s) => lines.includes(lineOf(s)));
+    const id = `f_${sha256(`${parentId}\u0000${lines.join(',')}`).slice(0, 16)}`;
+    children.push(buildFinding({ key: cluster.key, sites }, repo, runId, id, parentId));
+  }
+  const uncovered = cluster.sites.map(lineOf).filter((l) => !claimed.has(l));
+  if (uncovered.length) return { ok: false, reason: `no part holds the site(s) at line ${uncovered.join(', ')}` };
+  return { ok: true, children };
 }
 
 function normalize(raw: RawScans, repo: Repo, runId: string) {
@@ -422,20 +454,20 @@ function normalize(raw: RawScans, repo: Repo, runId: string) {
     ...(raw.codeql ? fromSarif(raw.codeql, dropped) : []),
   ];
   const sites = foldSites(raws, repo, dropped);
-  const findings = foldFindings(sites, repo, runId);
-
-  const seen = new Set();
-  for (const f of findings) {
-    if (seen.has(f.id)) throw new Error(`id collision: ${f.id}`);
-    seen.add(f.id);
-    f.sites.sort((a, b) => a.locus.line_at_scan - b.locus.line_at_scan);
-    for (const s of f.sites) {
-      s.observations.sort((a, b) =>
-        a.scanner.localeCompare(b.scanner) || a.rule_id.localeCompare(b.rule_id));
-    }
+  const clusters = new Map<string, Cluster>();
+  for (const g of foldFindings(sites, repo)) {
+    const id = clusterId(g);
+    if (clusters.has(id)) throw new Error(`id collision: ${id}`);
+    clusters.set(id, g);
   }
+  const findings = [...clusters].map(([id, g]) => buildFinding(g, repo, runId, id, null));
   findings.sort((a, b) => a.id.localeCompare(b.id));
-  return { findings, dropped, raw_count: raws.length, site_count: sites.length };
+  const split = (parentId: string, groups: SplitGroup[]) => {
+    const cluster = clusters.get(parentId);
+    if (!cluster) throw new Error(`${parentId} is not a finding of this scan, so it cannot be split`);
+    return splitFinding(parentId, cluster, groups, repo, runId);
+  };
+  return { findings, split, dropped, raw_count: raws.length, site_count: sites.length };
 }
 
 function main(argv: string[]): number {
@@ -461,7 +493,7 @@ function main(argv: string[]): number {
   return 0;
 }
 
-export type { RawScans };
+export type { RawScans, SplitGroup, SplitResult };
 export {
   toRepoRelative, normalize, makeRepo, classify, extractCallee, enclosingSymbol, sha256, collapseWs };
 if (import.meta.main) process.exit(main(process.argv.slice(2)));

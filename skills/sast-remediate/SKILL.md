@@ -71,8 +71,8 @@ witness records obligations 3 and 4 unavailable with the obstacle, still runs th
 suite, the rescan and the hostile auditor, and lands as `fixed_unwitnessed` after one attempt.
 
 Still unwritten: the integration branch (cherry-pick, combined re-run, bisection), the
-`executable` and `structural` witness tiers, tier selection, the `row_appears` observable, and
-split-count bookkeeping. Verified fixes are left on their own branches. `--verify` selects how much proof a fix
+`executable` and `structural` witness tiers, tier selection and the `row_appears` observable.
+Verified fixes are left on their own branches. `--verify` selects how much proof a fix
 must carry; `cheap` is the default and skips the witness pair and the auditor, so a fix verified
 at `cheap` is not a fix verified at `full`, and the report says which ran.
 `design/FUTURE-IMPROVEMENTS.md` is the authoritative gap list.

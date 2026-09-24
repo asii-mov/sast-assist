@@ -108,7 +108,9 @@ one contract, one patch, one witness, one commit. This is the cost lever that ma
 triage affordable. An unresolved callee never clusters.
 
 A triage agent that finds two sites need different enforcement points returns a `split`, and the
-parent re-emits them as separate findings. One split per finding per run.
+parent re-emits each part as a finding of its own, with the flow, anchor and excerpt derived from
+its sites alone. The parent is kept with a `split` outcome naming its children. A child may not
+split again: a second split goes to a human.
 
 ## Severity stays in the scanner's own words
 
